@@ -1,0 +1,11 @@
+.env
+.codegraph
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+data/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
