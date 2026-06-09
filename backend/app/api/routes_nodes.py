@@ -27,6 +27,12 @@ def create_node(payload: NodeCreate):
         )
 
 
+@router.get("/graph")
+def get_full_graph():
+    with get_db() as db:
+        return graph_store.full_graph(db)
+
+
 @router.get("/{node_id}")
 def get_node(node_id: str):
     with get_db() as db:

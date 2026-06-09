@@ -45,28 +45,42 @@ def seed_if_empty() -> None:
         root = graph_store.create_node(
             db,
             title="Me.Agent",
+            body="个人认知图的总入口，用于连接工作、生活和 Me.Agent 自身设计三个长期上下文。",
+            is_workspace=True,
+            actor="system",
+        )
+        work = graph_store.create_node(
+            db,
+            title="Me.Agent - 工作",
             body=(
-                "以个人认知图为核心的长期陪伴型 Agent。MVP 支持节点、边、局部图、对话、"
-                "episode、proposal、工作区和事件日志。"
+                "工作相关的长期上下文入口，用于沉淀项目、任务、会议、代码、研究和职业规划。"
             ),
             is_workspace=True,
             actor="system",
         )
-        context = graph_store.create_node(
+        life = graph_store.create_node(
             db,
-            title="差序格局上下文",
-            body="以当前锚点为中心，结合图距离、边权、访问频次、时间和语义相关性组织局部视野。",
+            title="Me.Agent - 生活",
+            body="生活相关的长期上下文入口，用于记录日常事件、关系、习惯、兴趣、灵感和个人安排。",
+            is_workspace=True,
             actor="system",
         )
-        writer = graph_store.create_node(
+        design = graph_store.create_node(
             db,
-            title="Graph Writer 提案机制",
-            body="Agent 不直接执行高风险图更新，而是生成 create_node、create_edge、split_node 等 proposal。",
+            title="Me.Agent - Me.Agent 设计",
+            body="Me.Agent 自身的产品、架构、交互、图模型、上下文机制和迭代计划。",
+            is_workspace=True,
             actor="system",
         )
-        graph_store.create_edge(db, root["id"], context["id"], weight=1.0, created_by="system")
-        graph_store.create_edge(db, root["id"], writer["id"], weight=0.9, created_by="system")
-        graph_store.append_event(db, "Seeded", "system", {"root_node_id": root["id"]})
+        graph_store.create_edge(db, root["id"], work["id"], weight=1.0, created_by="system")
+        graph_store.create_edge(db, root["id"], life["id"], weight=1.0, created_by="system")
+        graph_store.create_edge(db, root["id"], design["id"], weight=1.0, created_by="system")
+        graph_store.append_event(
+            db,
+            "Seeded",
+            "system",
+            {"root_node_id": root["id"], "node_ids": [root["id"], work["id"], life["id"], design["id"]]},
+        )
 
 
 app.include_router(routes_nodes.router)

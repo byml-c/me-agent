@@ -142,7 +142,7 @@ def get_node(db: sqlite3.Connection, node_id: str) -> dict[str, Any] | None:
 
 
 def update_node(db: sqlite3.Connection, node_id: str, changes: dict[str, Any], actor: str = "user") -> dict[str, Any] | None:
-    allowed = {"title", "body", "summary", "is_workspace", "status"}
+    allowed = {"title", "body", "summary", "memory", "is_workspace", "status"}
     values = {key: value for key, value in changes.items() if key in allowed and value is not None}
     if "body" in values and "summary" not in values:
         values["summary"] = summarize_text(values["body"])
@@ -150,7 +150,7 @@ def update_node(db: sqlite3.Connection, node_id: str, changes: dict[str, Any], a
         return get_node(db, node_id)
     values["updated_at"] = utc_now()
     assignments = ",".join(f"{key} = ?" for key in values)
-    params = [int(v) if key == "is_workspace" else v for key, v in values.items()]
+    params = [serialize_node_update_value(key, value) for key, value in values.items()]
     params.append(node_id)
     db.execute(f"UPDATE nodes SET {assignments} WHERE id = ?", params)
     append_event(db, "NodeEdited", actor, {"node_id": node_id, "changes": list(values)})
@@ -159,6 +159,14 @@ def update_node(db: sqlite3.Connection, node_id: str, changes: dict[str, Any], a
     if values.get("is_workspace") is True:
         append_event(db, "NodePromotedToWorkspace", actor, {"node_id": node_id})
     return get_node(db, node_id)
+
+
+def serialize_node_update_value(key: str, value: Any) -> Any:
+    if key == "is_workspace":
+        return int(value)
+    if key == "memory":
+        return dumps(value)
+    return value
 
 
 def touch_nodes(db: sqlite3.Connection, node_ids: list[str]) -> None:
@@ -283,6 +291,17 @@ def ego_graph(db: sqlite3.Connection, anchor_id: str | None, depth: int = 2, lim
     node_ids = set(distances)
     nodes = [{**all_nodes[node_id], "distance": distances[node_id]} for node_id in node_ids if node_id in all_nodes]
     edges = [edge for edge in all_edges if edge["node_a_id"] in node_ids and edge["node_b_id"] in node_ids]
+    return {"nodes": nodes, "edges": edges}
+
+
+def full_graph(db: sqlite3.Connection) -> dict[str, Any]:
+    nodes = [
+        {**node, "distance": 0}
+        for node in list_nodes(db, include_archived=False)
+        if not node["title"].startswith("Episode:")
+    ]
+    node_ids = {node["id"] for node in nodes}
+    edges = [edge for edge in list_edges(db) if edge["node_a_id"] in node_ids and edge["node_b_id"] in node_ids]
     return {"nodes": nodes, "edges": edges}
 
 

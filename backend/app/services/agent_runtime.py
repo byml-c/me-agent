@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from typing import Any
 
-from backend.app.services import context_reader, graph_store, graph_writer, llm
+from backend.app.services import context_reader, graph_store, graph_writer, graph_writer_agent, llm
 
 
 def chat(
@@ -42,7 +43,8 @@ def chat(
         {"session_id": session["id"], "context_node_ids": [node["id"] for node in context["context_nodes"]]},
     )
 
-    assistant_message = llm.complete_chat(message, context["context_summary"])
+    assistant_raw = llm.complete_chat(message, context["context_summary"])
+    assistant_message, conversation_control = llm.parse_conversation_control(assistant_raw)
     graph_store.add_message(
         db,
         session["id"],
@@ -52,14 +54,21 @@ def chat(
     )
     graph_store.append_event(db, "AgentResponseGenerated", "agent", {"session_id": session["id"]})
 
-    proposals = graph_writer.propose_updates(db, message, assistant_message, context) if allow_proposals else []
+    graph_intent = llm.graph_writer_summary_intent(message, assistant_message, conversation_control) if allow_proposals else llm.no_graph_intent()
+    generated_proposals = (
+        graph_writer_agent.generate_proposals(db, message, assistant_message, context, graph_intent)
+        if allow_proposals
+        else []
+    )
+    proposals, auto_applied = split_review_and_auto_apply(db, generated_proposals)
     return {
         "session_id": session["id"],
         "assistant_message": assistant_message,
         "used_context": context,
         "episode_node": episode,
+        "graph_intent": graph_intent,
         "proposals": proposals,
-        "auto_applied": [],
+        "auto_applied": auto_applied,
     }
 
 
@@ -108,6 +117,36 @@ def finish_chat(
     user_message: str,
     allow_proposals: bool = True,
 ) -> dict[str, Any]:
+    graph_intent = (
+        record_assistant_and_graph_intent(db, session_id, assistant_message, context, user_message)
+        if allow_proposals
+        else llm.no_graph_intent()
+    )
+    if not allow_proposals:
+        record_assistant_message(db, session_id, assistant_message, context)
+    generated_proposals = generate_graph_proposals(db, user_message, assistant_message, context, graph_intent, allow_proposals)
+    proposals, auto_applied = split_review_and_auto_apply(db, generated_proposals)
+    return {"proposals": proposals, "auto_applied": auto_applied, "graph_intent": graph_intent}
+
+
+def record_assistant_and_graph_intent(
+    db: sqlite3.Connection,
+    session_id: str,
+    assistant_message: str,
+    context: dict[str, Any],
+    user_message: str,
+) -> dict[str, Any]:
+    assistant_message, conversation_control = llm.parse_conversation_control(assistant_message)
+    record_assistant_message(db, session_id, assistant_message, context)
+    return llm.graph_writer_summary_intent(user_message, assistant_message, conversation_control)
+
+
+def record_assistant_message(
+    db: sqlite3.Connection,
+    session_id: str,
+    assistant_message: str,
+    context: dict[str, Any],
+) -> None:
     graph_store.add_message(
         db,
         session_id,
@@ -116,5 +155,46 @@ def finish_chat(
         [node["id"] for node in context["context_nodes"]],
     )
     graph_store.append_event(db, "AgentResponseGenerated", "agent", {"session_id": session_id})
-    proposals = graph_writer.propose_updates(db, user_message, assistant_message, context) if allow_proposals else []
-    return {"proposals": proposals, "auto_applied": []}
+
+
+def generate_graph_proposals(
+    db: sqlite3.Connection,
+    user_message: str,
+    assistant_message: str,
+    context: dict[str, Any],
+    graph_intent: dict[str, Any],
+    allow_proposals: bool = True,
+) -> list[dict[str, Any]]:
+    if not allow_proposals:
+        return []
+    return graph_writer_agent.generate_proposals(db, user_message, assistant_message, context, graph_intent)
+
+
+def stream_graph_proposals(
+    db: sqlite3.Connection,
+    user_message: str,
+    assistant_message: str,
+    context: dict[str, Any],
+    graph_intent: dict[str, Any],
+    allow_proposals: bool = True,
+) -> Iterator[dict[str, Any]]:
+    if not allow_proposals:
+        return
+    yield from graph_writer_agent.stream_proposals(db, user_message, assistant_message, context, graph_intent)
+
+
+def split_review_and_auto_apply(db: sqlite3.Connection, proposals: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    review: list[dict[str, Any]] = []
+    auto_applied: list[dict[str, Any]] = []
+    for proposal in proposals:
+        if proposal_requires_review(proposal):
+            review.append(proposal)
+            continue
+        applied = graph_writer.apply_proposal(db, proposal)
+        resolved = graph_store.resolve_proposal(db, proposal["id"], "accepted")
+        auto_applied.append({"proposal": resolved or proposal, "applied": applied})
+    return review, auto_applied
+
+
+def proposal_requires_review(proposal: dict[str, Any]) -> bool:
+    return proposal.get("operation") in {"create_node", "split_node", "delete_node", "move_node"}

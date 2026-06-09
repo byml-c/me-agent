@@ -118,14 +118,20 @@ def apply_proposal(db: sqlite3.Connection, proposal: dict[str, Any]) -> dict[str
             actor="agent",
         )
         for target_id in proposal["target_ids"]:
-            if target_id:
+            if target_id and target_id != node["id"] and graph_store.get_node(db, target_id):
                 graph_store.create_edge(db, node["id"], target_id, weight=0.5, is_candidate=False, created_by="agent")
         return {"node": node}
     if operation == "create_edge":
+        node_a_id = payload.get("node_a_id") or (proposal["target_ids"][0] if proposal["target_ids"] else None)
+        node_b_id = payload.get("node_b_id") or (proposal["target_ids"][1] if len(proposal["target_ids"]) > 1 else None)
+        if not node_a_id or not node_b_id or node_a_id == node_b_id:
+            return {"ignored": True, "operation": operation, "reason": "invalid edge endpoints"}
+        if not graph_store.get_node(db, node_a_id) or not graph_store.get_node(db, node_b_id):
+            return {"ignored": True, "operation": operation, "reason": "edge endpoint not found"}
         edge = graph_store.create_edge(
             db,
-            payload["node_a_id"],
-            payload["node_b_id"],
+            node_a_id,
+            node_b_id,
             weight=float(payload.get("weight", 0.5)),
             is_candidate=bool(payload.get("is_candidate", True)),
             created_by="agent",
@@ -141,7 +147,7 @@ def apply_proposal(db: sqlite3.Connection, proposal: dict[str, Any]) -> dict[str
         ]
         for node in created:
             for target_id in proposal["target_ids"]:
-                if target_id:
+                if target_id and target_id != node["id"] and graph_store.get_node(db, target_id):
                     graph_store.create_edge(db, node["id"], target_id, weight=0.4, is_candidate=False, created_by="agent")
         return {"nodes": created}
     return {"ignored": True, "operation": operation}

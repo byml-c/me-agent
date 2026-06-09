@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { CornerDownLeft, History, Inbox, Layers3, MessageCircle, Send, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, CornerDownLeft, FileText, History, Inbox, Layers3, Lock, MessageCircle, Save, Send, Unlock, X } from "lucide-react";
 import { api } from "@/api/client";
+import { NODE_ICON_OPTIONS, getNodeIcon, type NodeIconKey } from "@/lib/nodeIcons";
 import type { ChatResponse, ChatSession, MeNode, Proposal } from "@/types";
 
 type Message = {
@@ -13,8 +14,18 @@ type Message = {
 type ChatPanelProps = {
   sessionId?: string;
   anchorId?: string;
+  anchorLocked?: boolean;
+  onAnchorLockChange?: (locked: boolean) => void;
   onAnchorChange?: (nodeId: string) => void;
   onGraphChanged?: () => void;
+  onNodeChanged?: () => void;
+  onProposalReview?: (response: ChatResponse) => void;
+  onProposalResolved?: (proposalId: string, accepted: boolean) => void;
+  onGraphIntent?: (graphIntent: ChatResponse["graph_intent"]) => void;
+  onGraphBuildStart?: (graphIntent: ChatResponse["graph_intent"]) => void;
+  onGraphBuildDone?: () => void;
+  onProposalStream?: (proposal: Proposal) => void;
+  nodeEditorCommand?: { action: "edit"; nodeId: string; nonce: number } | null;
 };
 
 type ChatWindow = {
@@ -24,7 +35,31 @@ type ChatWindow = {
   height: number;
 };
 
-export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChange, onGraphChanged }: ChatPanelProps) {
+type NodeDraft = {
+  title: string;
+  summary: string;
+  body: string;
+  icon: NodeIconKey;
+  is_workspace: boolean;
+  status: MeNode["status"];
+};
+
+export function ChatPanel({
+  sessionId,
+  anchorId: externalAnchorId,
+  anchorLocked = false,
+  onAnchorLockChange,
+  onAnchorChange,
+  onGraphChanged,
+  onNodeChanged,
+  onProposalReview,
+  onProposalResolved,
+  onGraphIntent,
+  onGraphBuildStart,
+  onGraphBuildDone,
+  onProposalStream,
+  nodeEditorCommand
+}: ChatPanelProps) {
   const [nodes, setNodes] = useState<MeNode[]>([]);
   const [anchorId, setAnchorId] = useState("");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -36,8 +71,23 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
   const [chatOpen, setChatOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [nodeEditorOpen, setNodeEditorOpen] = useState(false);
+  const [activeNode, setActiveNode] = useState<MeNode | null>(null);
+  const [nodeDraft, setNodeDraft] = useState<NodeDraft | null>(null);
+  const [nodeSaving, setNodeSaving] = useState(false);
+  const [nodeIconPickerOpen, setNodeIconPickerOpen] = useState(false);
+  const [nodeIconSearch, setNodeIconSearch] = useState("");
   const [chatWindow, setChatWindow] = useState<ChatWindow>({ x: 0, y: 76, width: 480, height: 720 });
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const nodeTitleRef = useRef<HTMLInputElement | null>(null);
+  const nodeIconSearchRef = useRef<HTMLInputElement | null>(null);
+  const filteredNodeIconOptions = useMemo(() => {
+    const query = nodeIconSearch.trim().toLowerCase();
+    if (!query) {
+      return NODE_ICON_OPTIONS;
+    }
+    return NODE_ICON_OPTIONS.filter((option) => option.label.toLowerCase().includes(query) || option.key.toLowerCase().includes(query));
+  }, [nodeIconSearch]);
 
   useEffect(() => {
     setChatWindow(defaultChatWindow());
@@ -54,8 +104,91 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
     }
   }, [externalAnchorId]);
 
+  useEffect(() => {
+    if (!nodeEditorOpen || !anchorId) {
+      return;
+    }
+    loadActiveNode(anchorId);
+  }, [nodeEditorOpen, anchorId]);
+
+  useEffect(() => {
+    if (nodeEditorOpen) {
+      window.setTimeout(() => nodeTitleRef.current?.focus(), 0);
+    }
+  }, [nodeEditorOpen, activeNode?.id]);
+
+  useEffect(() => {
+    if (!nodeEditorOpen) {
+      setNodeIconPickerOpen(false);
+      setNodeIconSearch("");
+    }
+  }, [nodeEditorOpen]);
+
+  useEffect(() => {
+    if (nodeIconPickerOpen) {
+      window.setTimeout(() => nodeIconSearchRef.current?.focus(), 0);
+    }
+  }, [nodeIconPickerOpen]);
+
+  useEffect(() => {
+    if (!nodeEditorCommand) {
+      return;
+    }
+    updateAnchor(nodeEditorCommand.nodeId);
+    setNodeEditorOpen(true);
+    loadActiveNode(nodeEditorCommand.nodeId);
+  }, [nodeEditorCommand?.nonce]);
+
   function refreshSessions() {
     api.chat.sessions().then(setSessions).catch(console.error);
+  }
+
+  async function loadActiveNode(nodeId: string) {
+    try {
+      const node = await api.nodes.get(nodeId);
+      setActiveNode(node);
+      setNodeDraft(draftFromNode(node));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function saveNodeDraft() {
+    if (!nodeDraft || !nodeDraft.title.trim()) {
+      return;
+    }
+    setNodeSaving(true);
+    try {
+      const updated = activeNode ? await api.nodes.update(activeNode.id, nodeUpdateFromDraft(activeNode, nodeDraft)) : null;
+      if (!updated) {
+        return;
+      }
+      setActiveNode(updated);
+      setNodeDraft(draftFromNode(updated));
+      setNodes((items) => items.some((node) => node.id === updated.id) ? items.map((node) => (node.id === updated.id ? updated : node)) : [updated, ...items]);
+      updateAnchor(updated.id);
+      onNodeChanged?.();
+    } finally {
+      setNodeSaving(false);
+    }
+  }
+
+  async function closeNodeEditor() {
+    if (nodeDraft && shouldAutoSaveNodeDraft(activeNode, nodeDraft)) {
+      await saveNodeDraft();
+    }
+    setNodeEditorOpen(false);
+  }
+
+  function discardNodeDraft() {
+    if (activeNode) {
+      setNodeDraft(draftFromNode(activeNode));
+    }
+    setNodeEditorOpen(false);
+  }
+
+  function openNodeEditor() {
+    setNodeEditorOpen(true);
   }
 
   async function chooseSession(id: string) {
@@ -73,9 +206,37 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
         .map((item) => ({ role: item.role as "user" | "assistant", content: item.content }))
     );
     const nextAnchor = session.current_anchor_node_ids[0];
-    if (nextAnchor) {
+    if (nextAnchor && !anchorLocked) {
       setAnchorId(nextAnchor);
       onAnchorChange?.(nextAnchor);
+    }
+  }
+
+  function updateAnchor(nodeId: string) {
+    setAnchorId(nodeId);
+    onAnchorChange?.(nodeId);
+  }
+
+  function applyAutoAnchor(result: ChatResponse) {
+    if (anchorLocked) {
+      return;
+    }
+    const nextAnchor =
+      result.graph_intent?.suggested_anchor_node_id ??
+      result.used_context.anchor_nodes[0] ??
+      result.used_context.context_nodes[0]?.id;
+    if (nextAnchor) {
+      updateAnchor(nextAnchor);
+    }
+  }
+
+  function applySuggestedAnchor(graphIntent: ChatResponse["graph_intent"]) {
+    if (anchorLocked) {
+      return;
+    }
+    const nextAnchor = graphIntent?.suggested_anchor_node_id;
+    if (nextAnchor) {
+      updateAnchor(nextAnchor);
     }
   }
 
@@ -95,9 +256,8 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
         onMeta: (meta) => {
           setCurrentSessionId(meta.session_id);
           const nextAnchor = meta.used_context.anchor_nodes[0] ?? meta.used_context.context_nodes[0]?.id;
-          if (nextAnchor) {
-            setAnchorId(nextAnchor);
-            onAnchorChange?.(nextAnchor);
+          if (nextAnchor && !anchorLocked) {
+            updateAnchor(nextAnchor);
           }
         },
         onDelta: (delta) => {
@@ -109,19 +269,30 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
             }
             return next;
           });
+        },
+        onGraphIntent: (event) => {
+          onGraphIntent?.(event.graph_intent);
+          applySuggestedAnchor(event.graph_intent);
+        },
+        onGraphBuilding: (event) => {
+          onGraphBuildStart?.(event.graph_intent);
+        },
+        onProposal: (event) => {
+          onProposalStream?.(event.proposal);
+        },
+        onGraphChanged: () => {
+          onNodeChanged?.();
         }
       });
       setCurrentSessionId(result.session_id);
       setResponse(result);
       refreshSessions();
-      const nextAnchor = result.used_context.anchor_nodes[0] ?? result.used_context.context_nodes[0]?.id;
-      if (nextAnchor) {
-        setAnchorId(nextAnchor);
-        onAnchorChange?.(nextAnchor);
-      }
+      applyAutoAnchor(result);
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
+        onProposalReview?.(result);
       }
+      onGraphBuildDone?.();
       setMessages((items) => {
         const next = [...items];
         const last = next[next.length - 1];
@@ -132,6 +303,7 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
       });
     } finally {
       setLoading(false);
+      onGraphBuildDone?.();
     }
   }
 
@@ -164,6 +336,9 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   }
+
+  const currentAnchor = nodes.find((node) => node.id === anchorId);
+  const currentAnchorTitle = currentAnchor?.title ?? "当前推断节点";
 
   return (
     <div className="floating-workspace">
@@ -201,7 +376,15 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
         <aside className="floating-panel insight-panel">
           <PanelHead title="上下文" onClose={() => setContextOpen(false)} />
           <ContextCard response={response} />
-          <ProposalCard proposals={response?.proposals ?? []} onResolved={onGraphChanged} />
+          <ProposalCard
+            proposals={response?.proposals ?? []}
+            onResolved={(proposalId, accepted) => {
+              onProposalResolved?.(proposalId, accepted);
+              if (accepted) {
+                onGraphChanged?.();
+              }
+            }}
+          />
         </aside>
       ) : null}
 
@@ -224,13 +407,30 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
         >
           <div className="chat-title-controls">
             <span>Chat</span>
-            <select className="title-select" value={anchorId} onChange={(event) => setAnchorId(event.target.value)}>
+            <select
+              className="title-select anchor-mode-select"
+              value={anchorLocked && anchorId ? anchorId : "__auto__"}
+              onChange={(event) => {
+                const nextAnchor = event.target.value;
+                if (nextAnchor !== "__auto__") {
+                  updateAnchor(nextAnchor);
+                }
+              }}
+            >
+              <option value="__auto__">{`Auto - ${currentAnchorTitle}`}</option>
               {nodes.map((node) => (
                 <option key={node.id} value={node.id}>
                   {node.title}
                 </option>
               ))}
             </select>
+            <button
+              className={anchorLocked ? "ghost-icon lock-toggle active" : "ghost-icon lock-toggle"}
+              title={anchorLocked ? "已锁定当前节点" : "自动跟随推断节点"}
+              onClick={() => onAnchorLockChange?.(!anchorLocked)}
+            >
+              {anchorLocked ? <Lock size={15} /> : <Unlock size={15} />}
+            </button>
             <select className="title-select" value={currentSessionId ?? ""} onChange={(event) => chooseSession(event.target.value)}>
               <option value="">新对话</option>
               {sessions.map((session) => (
@@ -239,11 +439,141 @@ export function ChatPanel({ sessionId, anchorId: externalAnchorId, onAnchorChang
                 </option>
               ))}
             </select>
+            <button
+              className="ghost-icon node-editor-title-button"
+              title="编辑当前节点"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                openNodeEditor();
+              }}
+            >
+              <FileText size={15} />
+            </button>
           </div>
           <button className="ghost-icon" title="关闭" onClick={() => setChatOpen(false)}>
             <X size={16} />
           </button>
         </div>
+        {nodeEditorOpen ? (
+          <div className="node-editor-overlay">
+            <div className="node-editor-head">
+              <div>
+                <strong>{nodeDraft?.title || activeNode?.title || "新节点"}</strong>
+                <span>{activeNode?.id ?? anchorId}</span>
+              </div>
+              <button className="ghost-icon" title="关闭" onClick={closeNodeEditor}>
+                <X size={16} />
+              </button>
+            </div>
+            {nodeDraft ? (
+              <div className="node-editor-body">
+                <div className="field-label">
+                  标题
+                  <div className="node-title-edit-row">
+                    <div className="node-avatar-picker-wrap">
+                      <button
+                        className={nodeIconPickerOpen ? "node-avatar-button active" : "node-avatar-button"}
+                        type="button"
+                        title="选择节点图标"
+                        onClick={() => setNodeIconPickerOpen((open) => !open)}
+                      >
+                        <NodeIconGlyph iconKey={nodeDraft.icon} />
+                      </button>
+                      {nodeIconPickerOpen ? (
+                        <div className="node-icon-dropdown">
+                          <input
+                            ref={nodeIconSearchRef}
+                            className="node-icon-search"
+                            placeholder="搜索 icon"
+                            value={nodeIconSearch}
+                            onChange={(event) => setNodeIconSearch(event.target.value)}
+                          />
+                          <div className="node-icon-options">
+                            {filteredNodeIconOptions.map((option) => (
+                              <button
+                                key={option.key || "empty"}
+                                className={nodeDraft.icon === option.key ? "active" : ""}
+                                title={option.label}
+                                onClick={() => {
+                                  setNodeDraft((draft) => draft ? { ...draft, icon: option.key } : draft);
+                                  setNodeIconPickerOpen(false);
+                                  setNodeIconSearch("");
+                                }}
+                                type="button"
+                              >
+                                <NodeIconGlyph iconKey={option.key} />
+                                <span>{option.label}</span>
+                              </button>
+                            ))}
+                            {filteredNodeIconOptions.length === 0 ? <div className="node-icon-empty">没有匹配的 icon</div> : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                    <input
+                      ref={nodeTitleRef}
+                      className="node-field"
+                      value={nodeDraft.title}
+                      onChange={(event) => setNodeDraft((draft) => draft ? { ...draft, title: event.target.value } : draft)}
+                    />
+                  </div>
+                </div>
+                <label className="field-label">
+                  摘要
+                  <textarea
+                    className="node-field node-summary"
+                    value={nodeDraft.summary}
+                    onChange={(event) => setNodeDraft((draft) => draft ? { ...draft, summary: event.target.value } : draft)}
+                  />
+                </label>
+                <label className="field-label body-field">
+                  正文
+                  <textarea
+                    className="node-field node-body"
+                    value={nodeDraft.body}
+                    onChange={(event) => setNodeDraft((draft) => draft ? { ...draft, body: event.target.value } : draft)}
+                  />
+                </label>
+                <div className="node-editor-row">
+                  <label className="node-check">
+                    <input
+                      type="checkbox"
+                      checked={nodeDraft.is_workspace}
+                      onChange={(event) => setNodeDraft((draft) => draft ? { ...draft, is_workspace: event.target.checked } : draft)}
+                    />
+                    工作区
+                  </label>
+                  <label className="field-label compact">
+                    状态
+                    <select
+                      className="node-field"
+                      value={nodeDraft.status}
+                      onChange={(event) => setNodeDraft((draft) => draft ? { ...draft, status: event.target.value as MeNode["status"] } : draft)}
+                    >
+                      <option value="active">active</option>
+                      <option value="dense">dense</option>
+                      <option value="archived">archived</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="node-meta">
+                  <span>updated {activeNode?.updated_at ?? "-"}</span>
+                  <span>access {activeNode?.access_count ?? 0}</span>
+                </div>
+                <div className="node-editor-actions">
+                  <button className="node-abandon-button" onClick={discardNodeDraft}>放弃修改</button>
+                  <button className="node-save-button" onClick={saveNodeDraft} disabled={nodeSaving || !nodeDraft.title.trim()}>
+                    <Save size={15} />
+                    {nodeSaving ? "保存中" : "保存"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="node-editor-empty">选择一个节点后显示属性。</div>
+            )}
+          </div>
+        ) : null}
         <div className="messages">
           {messages.map((item, index) => (
             <div key={`${item.role}-${index}`} className={`message ${item.role}`}>
@@ -289,6 +619,56 @@ function defaultChatWindow(): ChatWindow {
   };
 }
 
+function NodeIconGlyph({ iconKey }: { iconKey: NodeIconKey }) {
+  const icon = getNodeIcon(iconKey);
+  if (!icon) {
+    return <span className="node-icon-empty-mark" aria-hidden="true" />;
+  }
+  const path = Array.isArray(icon.icon[4]) ? icon.icon[4].join(" ") : icon.icon[4];
+  return (
+    <svg viewBox={`0 0 ${icon.icon[0]} ${icon.icon[1]}`} aria-hidden="true">
+      <path d={path} />
+    </svg>
+  );
+}
+
+function draftFromNode(node: MeNode): NodeDraft {
+  return {
+    title: node.title,
+    summary: node.summary ?? "",
+    body: node.body,
+    icon: normalizeNodeIcon(node.memory?.icon),
+    is_workspace: node.is_workspace,
+    status: node.status
+  };
+}
+
+function normalizeNodeIcon(value: unknown): NodeIconKey {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return NODE_ICON_OPTIONS.some((option) => option.key === value) ? (value as NodeIconKey) : "";
+}
+
+function nodeUpdateFromDraft(node: MeNode, draft: NodeDraft): Partial<Pick<MeNode, "title" | "body" | "summary" | "memory" | "is_workspace" | "status">> {
+  return {
+    title: draft.title,
+    summary: draft.summary,
+    body: draft.body,
+    memory: { ...node.memory, icon: draft.icon },
+    is_workspace: draft.is_workspace,
+    status: draft.status
+  };
+}
+
+function shouldAutoSaveNodeDraft(activeNode: MeNode | null, draft: NodeDraft) {
+  if (!activeNode) {
+    return false;
+  }
+  const original = draftFromNode(activeNode);
+  return JSON.stringify(original) !== JSON.stringify(draft);
+}
+
 function clampWindow(windowState: ChatWindow): ChatWindow {
   if (typeof window === "undefined") {
     return windowState;
@@ -309,6 +689,10 @@ async function streamChat(payload: {
   anchor_node_ids: string[];
   onMeta: (meta: Pick<ChatResponse, "session_id" | "used_context" | "episode_node">) => void;
   onDelta: (delta: string) => void;
+  onGraphIntent: (event: { graph_intent: ChatResponse["graph_intent"] }) => void;
+  onGraphBuilding: (event: { graph_intent: ChatResponse["graph_intent"]; message: string }) => void;
+  onProposal: (event: { proposal: Proposal }) => void;
+  onGraphChanged: () => void;
 }): Promise<ChatResponse> {
   const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}/chat/stream`, {
     method: "POST",
@@ -347,6 +731,18 @@ async function streamChat(payload: {
       }
       if (event.event === "delta") {
         payload.onDelta((event.data as { content: string }).content);
+      }
+      if (event.event === "graph_intent") {
+        payload.onGraphIntent(event.data as { graph_intent: ChatResponse["graph_intent"] });
+      }
+      if (event.event === "graph_building") {
+        payload.onGraphBuilding(event.data as { graph_intent: ChatResponse["graph_intent"]; message: string });
+      }
+      if (event.event === "proposal") {
+        payload.onProposal(event.data as { proposal: Proposal });
+      }
+      if (event.event === "graph_changed") {
+        payload.onGraphChanged();
       }
       if (event.event === "done") {
         donePayload = event.data as ChatResponse;
@@ -402,16 +798,16 @@ function ContextCard({ response }: { response: ChatResponse | null }) {
   );
 }
 
-function ProposalCard({ proposals, onResolved }: { proposals: Proposal[]; onResolved?: () => void }) {
+function ProposalCard({ proposals, onResolved }: { proposals: Proposal[]; onResolved?: (proposalId: string, accepted: boolean) => void }) {
   const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set());
 
   async function resolve(id: string, accept: boolean) {
     if (accept) {
       await api.proposals.accept(id);
-      onResolved?.();
     } else {
       await api.proposals.reject(id);
     }
+    onResolved?.(id, accept);
     setResolvedIds((current) => new Set([...current, id]));
   }
 

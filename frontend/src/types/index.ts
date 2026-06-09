@@ -68,6 +68,13 @@ export type ChatResponse = {
     context_summary: string;
   };
   episode_node: MeNode;
+  graph_intent?: {
+    should_edit: boolean;
+    direction: string;
+    operations: string[];
+    suggested_anchor_node_id?: string | null;
+    suggested_anchor_reason?: string;
+  };
   proposals: Proposal[];
   auto_applied?: unknown[];
 };

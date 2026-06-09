@@ -16,6 +16,7 @@ class NodeUpdate(BaseModel):
     title: str | None = None
     body: str | None = None
     summary: str | None = None
+    memory: dict[str, Any] | None = None
     is_workspace: bool | None = None
     status: str | None = None
 
