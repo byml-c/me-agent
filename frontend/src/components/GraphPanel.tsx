@@ -45,6 +45,36 @@ type GraphMenu =
   | { type: "create-node"; sourceId: string; x: number; y: number }
   | { type: "create-edge"; sourceId: string; targetId: string; x: number; y: number };
 
+const graphRootClass = "grid h-full min-h-0";
+const graphCanvasBaseClass = "relative w-full overflow-hidden bg-white";
+const graphCanvasCompactClass = "min-h-[360px] h-full";
+const graphCanvasExpandedClass = "h-[560px]";
+const graphSvgClass = "block h-full w-full";
+const graphToastClass = "pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-slate-200/90 bg-white/95 px-3 py-2 text-xs font-semibold text-slate-700 shadow-[0_14px_36px_rgba(20,26,23,0.1)] backdrop-blur-xl";
+const graphMenuClass = "absolute z-20 grid min-w-[124px] gap-1 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-[0_18px_44px_rgba(20,26,23,0.14)] backdrop-blur-xl";
+const graphMenuButtonClass = "h-9 rounded-xl px-3 text-left text-sm text-slate-800 transition hover:bg-slate-100";
+const graphNodeBaseClass = "cursor-pointer fill-[#f8faf9] stroke-[rgba(22,30,26,0.12)] stroke-[1px] drop-shadow-[0_12px_18px_rgba(20,26,23,0.12)] transition-[opacity,stroke,stroke-width,transform] duration-150";
+const graphNodeAnchorClass = "fill-white stroke-[rgba(17,24,20,0.55)] stroke-[2.2px] drop-shadow-[0_18px_28px_rgba(20,26,23,0.16)]";
+const graphNodeWorkspaceClass = "fill-[#f1f6ff] stroke-[rgba(55,82,130,0.18)]";
+const graphNodePreviewClass = "fill-[#fffaf2] stroke-[rgba(184,118,43,0.7)] stroke-[2px] [stroke-dasharray:5_5] drop-shadow-[0_18px_28px_rgba(184,118,43,0.16)]";
+const graphLabelBaseClass = "pointer-events-none select-none text-[12px] fill-[rgba(27,35,31,0.74)] [paint-order:stroke] [stroke:rgba(255,255,255,0.92)] [stroke-width:4px] [stroke-linejoin:round]";
+const graphLabelAnchorClass = "fill-[#111814] font-bold";
+const graphLabelPreviewClass = "fill-[#7a4d18]";
+const graphIconBaseClass = "pointer-events-none fill-[rgba(28,38,33,0.62)] transition-[opacity,fill] duration-150";
+const graphIconAnchorClass = "fill-[rgba(17,24,20,0.82)]";
+const graphIconPreviewClass = "fill-[rgba(122,77,24,0.75)]";
+const graphLinkBaseClass = "stroke-[rgba(86,104,96,0.26)] [stroke-linecap:round] transition-[opacity,stroke] duration-150";
+const graphLinkCandidateClass = "stroke-[rgba(177,118,72,0.42)] [stroke-dasharray:4_8]";
+const graphLinkSelectedClass = "!stroke-[rgba(17,24,20,0.46)]";
+const graphLinkCandidateSelectedClass = "!stroke-[rgba(177,92,28,0.72)]";
+const graphLinkHitClass = "stroke-transparent [stroke-linecap:round] stroke-[18px] cursor-pointer";
+const graphDraftLinkClass = "pointer-events-none stroke-[rgba(17,24,20,0.48)] stroke-[2px] [stroke-dasharray:6_7]";
+const graphControlDotClass = "cursor-pointer fill-white stroke-[#111814] stroke-[2px] drop-shadow-[0_8px_14px_rgba(20,26,23,0.2)]";
+const graphControlDotDeleteClass = "fill-white stroke-[rgba(190,58,48,0.5)]";
+const graphControlKindClass = "cursor-pointer fill-none stroke-[#34413a] stroke-[2.2px] [stroke-linecap:round] [stroke-linejoin:round]";
+const graphControlTrashClass = "cursor-pointer fill-none stroke-[#be3a30] stroke-[2.4px] [stroke-linecap:round] [stroke-linejoin:round]";
+const graphControlTrashEdgeClass = "stroke-[2.2px]";
+
 export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = false, refreshKey = 0, reviewProposals = [] }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -177,17 +207,17 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
     svg.selectAll("*").remove();
     svg.attr("viewBox", `0 0 ${width} ${height}`);
 
-    const root = svg.append("g").attr("class", "d3-graph-root");
-    const grid = root.append("g").attr("class", "d3-grid");
+    const root = svg.append("g").attr("class", "graph-root");
+    const grid = root.append("g").attr("class", "graph-grid");
     drawGrid(grid, width, height);
 
-    const linkLayer = root.append("g").attr("class", "d3-links");
-    const draftLayer = root.append("g").attr("class", "d3-draft-links");
-    const nodeLayer = root.append("g").attr("class", "d3-nodes");
-    const iconLayer = root.append("g").attr("class", "d3-icons");
-    const labelLayer = root.append("g").attr("class", "d3-labels");
-    const controlsLayer = root.append("g").attr("class", "d3-node-controls");
-    const edgeControlsLayer = root.append("g").attr("class", "d3-edge-controls");
+    const linkLayer = root.append("g").attr("class", "graph-links");
+    const draftLayer = root.append("g").attr("class", "graph-draft-links");
+    const nodeLayer = root.append("g").attr("class", "graph-nodes");
+    const iconLayer = root.append("g").attr("class", "graph-icons");
+    const labelLayer = root.append("g").attr("class", "graph-labels");
+    const controlsLayer = root.append("g").attr("class", "graph-node-controls");
+    const edgeControlsLayer = root.append("g").attr("class", "graph-edge-controls");
 
     const links: SimLink[] = simLinks.map((link) => ({ ...link }));
     const hadPositions = nodePositionsRef.current.size > 0;
@@ -215,24 +245,26 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
       .selectAll<SVGLineElement, SimLink>("line")
       .data(links)
       .join("line")
-      .attr("class", (link) => link.isCandidate ? "d3-link candidate" : "d3-link")
+      .attr("data-link", "true")
+      .attr("class", (link) => [graphLinkBaseClass, link.isCandidate ? graphLinkCandidateClass : ""].filter(Boolean).join(" "))
       .attr("stroke-width", (link) => Math.max(0.8, Math.min(2.8, link.weight * 0.72)));
 
     const linkHitSelection = linkLayer
-      .selectAll<SVGLineElement, SimLink>("line.d3-link-hit")
+      .selectAll<SVGLineElement, SimLink>('line[data-hit="true"]')
       .data(links.filter((link) => link.sourceEdge), (link) => link.id)
       .join("line")
-      .attr("class", "d3-link-hit");
+      .attr("data-hit", "true")
+      .attr("class", graphLinkHitClass);
 
     const edgeControlSelection = edgeControlsLayer
       .selectAll<SVGGElement, SimLink>("g")
       .data(links.filter((link) => link.sourceEdge), (link) => link.id)
       .join("g")
-      .attr("class", "d3-edge-control hidden");
+      .attr("class", "hidden");
 
     edgeControlSelection
       .append("circle")
-      .attr("class", "d3-edge-control-dot")
+      .attr("class", graphControlDotClass)
       .attr("r", 11)
       .attr("cx", -14)
       .attr("cy", 0)
@@ -244,7 +276,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     edgeControlSelection
       .append("g")
-      .attr("class", "d3-edge-control-kind")
+      .attr("class", graphControlKindClass)
       .attr("transform", "translate(-21,-7) scale(0.58)")
       .html('<path d="M4 12h16"/><path d="M8 8l-4 4 4 4"/><path d="M16 8l4 4-4 4"/>')
       .on("click", (event, link) => {
@@ -255,7 +287,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     edgeControlSelection
       .append("circle")
-      .attr("class", "d3-edge-control-dot delete")
+      .attr("class", `${graphControlDotClass} ${graphControlDotDeleteClass}`)
       .attr("r", 11)
       .attr("cx", 14)
       .attr("cy", 0)
@@ -267,7 +299,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     edgeControlSelection
       .append("g")
-      .attr("class", "d3-control-trash edge")
+      .attr("class", `${graphControlTrashClass} ${graphControlTrashEdgeClass}`)
       .attr("transform", "translate(7,-7) scale(0.58)")
       .html('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>')
       .on("click", (event, link) => {
@@ -326,14 +358,14 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
       .selectAll<SVGTextElement, SimNode>("text")
       .data(simulationNodes, (node) => node.id)
       .join("text")
-      .attr("class", (node) => ["d3-label", node.isAnchor ? "anchor" : "", node.isPreview ? "preview" : ""].filter(Boolean).join(" "))
+      .attr("class", (node) => [graphLabelBaseClass, node.isAnchor ? graphLabelAnchorClass : "", node.isPreview ? graphLabelPreviewClass : ""].filter(Boolean).join(" "))
       .text((node) => node.title);
 
     const iconSelection = iconLayer
       .selectAll<SVGPathElement, SimNode>("path")
       .data(simulationNodes.filter((node) => node.iconPath), (node) => node.id)
       .join("path")
-      .attr("class", (node) => ["d3-node-icon", node.isAnchor ? "anchor" : "", node.isPreview ? "preview" : ""].filter(Boolean).join(" "))
+      .attr("class", (node) => [graphIconBaseClass, node.isAnchor ? graphIconAnchorClass : "", node.isPreview ? graphIconPreviewClass : ""].filter(Boolean).join(" "))
       .attr("d", (node) => node.iconPath ?? "")
       .attr("data-viewbox", (node) => node.iconViewBox);
 
@@ -341,11 +373,11 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
       .selectAll<SVGGElement, SimNode>("g")
       .data(simulationNodes.filter((node) => !node.isPreview), (node) => node.id)
       .join("g")
-      .attr("class", "d3-control hidden");
+      .attr("class", "hidden");
 
     controlSelection
       .append("circle")
-      .attr("class", "d3-control-dot add")
+      .attr("class", graphControlDotClass)
       .attr("r", 11)
       .attr("cx", 18)
       .attr("cy", -18)
@@ -356,7 +388,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     controlSelection
       .append("g")
-      .attr("class", "d3-control-plus")
+      .attr("class", "fill-none stroke-[#111814] stroke-[1.8px] [stroke-linecap:round]")
       .attr("transform", "translate(11,-25) scale(0.58)")
       .html('<path d="M12 5v14"/><path d="M5 12h14"/>')
       .on("click", (event, node) => {
@@ -366,7 +398,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     controlSelection
       .append("circle")
-      .attr("class", "d3-control-dot delete")
+      .attr("class", `${graphControlDotClass} ${graphControlDotDeleteClass}`)
       .attr("r", 11)
       .attr("cx", -18)
       .attr("cy", -18)
@@ -377,7 +409,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     controlSelection
       .append("g")
-      .attr("class", "d3-control-trash")
+      .attr("class", graphControlTrashClass)
       .attr("transform", "translate(-25,-25) scale(0.58)")
       .html('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>')
       .on("click", (event, node) => {
@@ -406,7 +438,8 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
     linkHitSelection.on("click", (event, link) => {
       event.stopPropagation();
       cancelHideControls();
-      linkSelection.classed("selected", (controlLink) => controlLink.id === link.id);
+      linkSelection.classed(graphLinkSelectedClass, (controlLink) => controlLink.id === link.id);
+      linkSelection.classed(graphLinkCandidateSelectedClass, (controlLink) => controlLink.id === link.id && controlLink.isCandidate);
       edgeControlSelection.classed("hidden", (controlLink) => controlLink.id !== link.id);
     });
 
@@ -539,7 +572,8 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
   ) {
     cancelHideControls();
     controls.classed("hidden", true);
-    links.classed("selected", false);
+    links.classed(graphLinkSelectedClass, false);
+    links.classed(graphLinkCandidateSelectedClass, false);
   }
 
   function startConnection(node: SimNode, draftLayer: d3.Selection<SVGGElement, unknown, null, undefined>) {
@@ -550,7 +584,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
     svgRef.current?.focus();
     temporaryLinkRef.current = draftLayer
       .append("line")
-      .attr("class", "d3-draft-link")
+      .attr("class", graphDraftLinkClass)
       .attr("x1", node.x ?? 0)
       .attr("y1", node.y ?? 0)
       .attr("x2", node.x ?? 0)
@@ -640,38 +674,41 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
     await refreshGraph();
   }
 
-  return (
-    <div className="grid">
-      <div ref={wrapRef} className={compact ? "graph-canvas compact d3-force-canvas" : "graph-canvas d3-force-canvas"}>
-        <svg ref={svgRef} className="d3-force-svg" role="img" aria-label="Local force graph" />
-        {connectingLabel ? <div className="graph-connect-toast">从 {connectingLabel} 连线</div> : null}
-        {menu ? (
-          <div className="graph-action-menu" style={{ left: menu.x, top: menu.y }}>
-            {menu.type === "create-node" ? (
-              <>
-                <button onClick={() => createConnectedNode(false)}>普通节点</button>
-                <button onClick={() => createConnectedNode(true)}>工作区</button>
-              </>
-            ) : (
-              <>
-                <button onClick={() => createEdge(false)}>普通边</button>
-                <button onClick={() => createEdge(true)}>参考边</button>
-              </>
-            )}
-          </div>
-        ) : null}
+    return (
+      <div className={graphRootClass}>
+        <div
+          ref={wrapRef}
+          className={`${graphCanvasBaseClass} ${compact ? graphCanvasCompactClass : graphCanvasExpandedClass}`}
+        >
+          <svg ref={svgRef} className={graphSvgClass} role="img" aria-label="Local force graph" />
+          {connectingLabel ? <div className={graphToastClass}>从 {connectingLabel} 连线</div> : null}
+          {menu ? (
+            <div className={graphMenuClass} style={{ left: menu.x, top: menu.y }}>
+              {menu.type === "create-node" ? (
+                <>
+                  <button className={graphMenuButtonClass} onClick={() => createConnectedNode(false)}>普通节点</button>
+                  <button className={graphMenuButtonClass} onClick={() => createConnectedNode(true)}>工作区</button>
+                </>
+              ) : (
+                <>
+                  <button className={graphMenuButtonClass} onClick={() => createEdge(false)}>普通边</button>
+                  <button className={graphMenuButtonClass} onClick={() => createEdge(true)}>参考边</button>
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
 function nodeClass(node: SimNode) {
   return [
-    "d3-node",
-    node.isAnchor ? "anchor" : "",
-    node.isWorkspace ? "workspace" : "",
-    node.isArchived ? "archived" : "",
-    node.isPreview ? "preview" : ""
+    graphNodeBaseClass,
+    node.isAnchor ? graphNodeAnchorClass : "",
+    node.isWorkspace ? graphNodeWorkspaceClass : "",
+    node.isArchived ? "opacity-45" : "",
+    node.isPreview ? graphNodePreviewClass : ""
   ].filter(Boolean).join(" ");
 }
 
@@ -698,7 +735,7 @@ function drawGrid(group: d3.Selection<SVGGElement, unknown, null, undefined>, wi
   group.selectAll("line.v")
     .data(vertical)
     .join("line")
-    .attr("class", "d3-grid-line")
+    .attr("class", "stroke-slate-200/60 stroke-[1px]")
     .attr("x1", (x) => x)
     .attr("x2", (x) => x)
     .attr("y1", 0)
@@ -706,7 +743,7 @@ function drawGrid(group: d3.Selection<SVGGElement, unknown, null, undefined>, wi
   group.selectAll("line.h")
     .data(horizontal)
     .join("line")
-    .attr("class", "d3-grid-line")
+    .attr("class", "stroke-slate-200/60 stroke-[1px]")
     .attr("x1", 0)
     .attr("x2", width)
     .attr("y1", (y) => y)
@@ -731,14 +768,14 @@ function setHoverState(
       neighborIds.add(source);
     }
   });
-  links.classed("muted", (link) => {
+  links.classed("opacity-20", (link) => {
     const source = typeof link.source === "object" ? link.source.id : String(link.source);
     const target = typeof link.target === "object" ? link.target.id : String(link.target);
     return source !== nodeId && target !== nodeId;
   });
-  nodes.classed("muted", (node) => !neighborIds.has(node.id));
-  labels.classed("muted", (node) => !neighborIds.has(node.id));
-  icons.classed("muted", (node) => !neighborIds.has(node.id));
+  nodes.classed("opacity-20", (node) => !neighborIds.has(node.id));
+  labels.classed("opacity-20", (node) => !neighborIds.has(node.id));
+  icons.classed("opacity-20", (node) => !neighborIds.has(node.id));
 }
 
 function clearHoverState(
@@ -747,8 +784,8 @@ function clearHoverState(
   labels: d3.Selection<SVGTextElement, SimNode, SVGGElement, unknown>,
   icons: d3.Selection<SVGPathElement, SimNode, SVGGElement, unknown>
 ) {
-  links.classed("muted", false);
-  nodes.classed("muted", false);
-  labels.classed("muted", false);
-  icons.classed("muted", false);
+  links.classed("opacity-20", false);
+  nodes.classed("opacity-20", false);
+  labels.classed("opacity-20", false);
+  icons.classed("opacity-20", false);
 }

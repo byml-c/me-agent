@@ -1,4 +1,4 @@
-import type { ChatResponse, ChatSession, EgoGraph, EventLogItem, MeEdge, MeNode, Proposal } from "@/types";
+import type { ChatResponse, ChatSession, EgoGraph, EventLogItem, LibraryEntry, LibraryFile, MeEdge, MeNode, NodeScriptRunResult, Proposal } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -29,8 +29,31 @@ export const api = {
     update: (id: string, payload: Partial<Pick<MeNode, "title" | "body" | "summary" | "memory" | "is_workspace" | "status">>) =>
       request<MeNode>(`/nodes/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
     get: (id: string) => request<MeNode>(`/nodes/${id}`),
+    runScript: (nodeId: string, scriptId: string, args: Record<string, unknown> = {}, code?: string) =>
+      request<NodeScriptRunResult>(`/nodes/${nodeId}/scripts/${scriptId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ node_id: nodeId, args, code, trigger: "manual_run" })
+      }),
+    triggerScripts: (nodeId: string, trigger: "manual_enter" | "ai_switch", args: Record<string, unknown> = {}) =>
+      request<{ node_id: string; trigger: string; results: NodeScriptRunResult[] }>(`/nodes/${nodeId}/scripts/trigger`, {
+        method: "POST",
+        body: JSON.stringify({ trigger, args })
+      }),
     fullGraph: () => request<EgoGraph>("/nodes/graph"),
     graph: (id: string, depth = 2) => request<EgoGraph>(`/nodes/${id}/ego-graph?depth=${depth}&limit=50`)
+  },
+  files: {
+    list: (query?: string) => request<LibraryFile[]>(`/files${query ? `?query=${encodeURIComponent(query)}` : ""}`),
+    create: (payload: { name: string; description?: string; media_type?: string; source_path?: string; content?: string }) =>
+      request<LibraryFile>("/files", { method: "POST", body: JSON.stringify(payload) }),
+    get: (id: string) => request<LibraryFile>(`/files/${id}`)
+  },
+  library: {
+    listEntries: (query?: string, kind?: "text" | "file") =>
+      request<LibraryEntry[]>(`/library/entries${query || kind ? `?${new URLSearchParams({ ...(query ? { query } : {}), ...(kind ? { kind } : {}) }).toString()}` : ""}`),
+    createEntry: (payload: { title: string; description?: string; content: string }) =>
+      request<LibraryEntry>("/library/entries", { method: "POST", body: JSON.stringify(payload) }),
+    getEntry: (id: string) => request<LibraryEntry>(`/library/entries/${id}`)
   },
   edges: {
     create: (payload: { node_a_id: string; node_b_id: string; weight?: number; is_candidate?: boolean }) =>
@@ -50,7 +73,15 @@ export const api = {
       message: string;
       anchor_node_ids?: string[];
       workspace_id?: string | null;
-    }) => request<ChatResponse>("/chat", { method: "POST", body: JSON.stringify(payload) })
+      parent_message_id?: string | null;
+    }) => request<ChatResponse>("/chat", { method: "POST", body: JSON.stringify(payload) }),
+    editMessage: (id: string, content: string) =>
+      request<ChatResponse>(`/chat/messages/${id}/edit`, { method: "POST", body: JSON.stringify({ content, context_budget: 12000 }) }),
+    regenerate: (id: string, variantTemperature = 0.75) =>
+      request<ChatResponse>(`/chat/messages/${id}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({ variant_temperature: variantTemperature, context_budget: 12000 })
+      })
   },
   proposals: {
     list: (status?: string) => request<Proposal[]>(`/proposals${status ? `?status=${status}` : ""}`),

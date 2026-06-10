@@ -13,19 +13,25 @@ export default function WorkspacesPage() {
   }, []);
 
   return (
-    <div>
-      <div className="page-head">
+    <div className="grid gap-5">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="page-title">Workspaces</h1>
-          <div className="page-subtitle">工作区是带有 workspace 标记的普通节点。</div>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-950">Workspaces</h1>
+          <div className="mt-2 text-sm text-slate-500">工作区是带有 workspace 标记的普通节点。</div>
         </div>
       </div>
-      <section className="card">
-        <div className="list">
+      <section className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur">
+        <div className="grid gap-3">
           {items.map((node) => (
-            <Link className="row" key={node.id} href={`/workspaces/${node.id}`}>
-              <span>{node.title}</span>
-              <span className="pill">{node.access_count} visits</span>
+            <Link
+              key={node.id}
+              href={`/workspaces/${node.id}`}
+              className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
+            >
+              <span className="font-medium text-slate-900">{node.title}</span>
+              <span className="inline-flex h-6 items-center rounded-full bg-slate-100 px-3 text-xs font-medium text-slate-500">
+                {node.access_count} visits
+              </span>
             </Link>
           ))}
         </div>

@@ -36,6 +36,7 @@ class EdgeUpdate(BaseModel):
 class ChatOptions(BaseModel):
     allow_proposals: bool = True
     context_budget: int = 12000
+    variant_temperature: float = 0.4
 
 
 class ChatRequest(BaseModel):
@@ -43,10 +44,41 @@ class ChatRequest(BaseModel):
     message: str
     anchor_node_ids: list[str] = Field(default_factory=list)
     workspace_id: str | None = None
+    parent_message_id: str | None = None
     options: ChatOptions = Field(default_factory=ChatOptions)
+
+
+class ChatMessageEditRequest(BaseModel):
+    content: str
+    context_budget: int = 12000
+
+
+class ChatRegenerateRequest(BaseModel):
+    variant_temperature: float = 0.75
+    context_budget: int = 12000
 
 
 class ScriptRunRequest(BaseModel):
     node_id: str | None = None
     code: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    trigger: str | None = None
+
+
+class LibraryFileCreate(BaseModel):
+    name: str
+    description: str | None = None
+    media_type: str | None = None
+    source_path: str | None = None
+    content: str | None = None
+
+
+class LibraryEntryCreate(BaseModel):
+    title: str
+    description: str | None = None
+    content: str = ""
+
+
+class NodeScriptTriggerRequest(BaseModel):
+    trigger: str
     args: dict[str, Any] = Field(default_factory=dict)

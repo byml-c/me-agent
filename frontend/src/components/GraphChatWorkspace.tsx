@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { api } from "@/api/client";
 import { GraphPanel } from "@/components/GraphPanel";
-import { ChatPanel } from "@/components/ChatPanel";
+import { AgentPanel } from "@/components/ChatPanel";
 import type { ChatResponse, MeNode, Proposal } from "@/types";
 
 export function GraphChatWorkspace() {
@@ -78,8 +78,8 @@ export function GraphChatWorkspace() {
   const pendingCount = reviewProposals.filter((proposal) => proposal.status === "pending").length;
 
   return (
-    <div className="graph-chat-shell">
-      <section className="graph-stage" aria-label="Local graph">
+    <div className="relative min-h-screen overflow-hidden bg-white">
+      <section className="absolute inset-0" aria-label="Local graph">
         <GraphPanel
           anchorId={anchorId}
           onSelectNode={(node) => {
@@ -94,25 +94,43 @@ export function GraphChatWorkspace() {
         />
       </section>
       {graphBuilding || currentProposal ? (
-        <div className={graphBuilding ? "review-dock building" : "review-dock"}>
-          <div className="review-copy">
-            <strong>{graphBuilding ? "建图中" : "Proposal review"}</strong>
-            <span>
+        <div
+          className={[
+            "absolute bottom-4 left-1/2 z-20 flex w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 items-center justify-between gap-3 rounded-full border border-slate-200/80 bg-white/90 px-4 py-3 text-slate-800 shadow-[0_20px_60px_rgba(15,23,42,0.12)] backdrop-blur-xl",
+            graphBuilding ? "w-[min(560px,calc(100vw-2rem))]" : ""
+          ].join(" ")}
+        >
+          <div className="grid min-w-0 grid-cols-[auto_auto_1fr] items-center gap-3">
+            <strong className="text-sm font-semibold text-slate-900">{graphBuilding ? "建图中" : "Proposal review"}</strong>
+            <span className="text-sm text-slate-500">
               {graphBuilding ? (
-                <span className="dock-spinner"><Loader2 size={14} /> 已生成 {pendingCount} 个</span>
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 size={14} className="animate-spin" />
+                  已生成 {pendingCount} 个
+                </span>
               ) : (
                 `${pendingCount} pending`
               )}
             </span>
-            <span>{graphBuilding ? graphIntent?.direction ?? "模型 B 正在生成 Proposal。" : proposalSummary(reviewProposals)}</span>
+            <span className="truncate text-sm text-slate-500">
+              {graphBuilding ? graphIntent?.direction ?? "Conversation Agent 正在调用图工具。" : proposalSummary(reviewProposals)}
+            </span>
           </div>
           {!graphBuilding ? (
-            <div className="review-actions">
-              <button className="review-button primary" onClick={() => resolveAllProposals(true)} title="全部接受">
+            <div className="flex flex-none items-center gap-2">
+              <button
+                className="inline-flex h-9 items-center gap-2 rounded-full bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-800"
+                onClick={() => resolveAllProposals(true)}
+                title="全部接受"
+              >
                 <Check size={15} />
                 全部接受
               </button>
-              <button className="review-button" onClick={() => resolveAllProposals(false)} title="全部拒绝">
+              <button
+                className="inline-flex h-9 items-center gap-2 rounded-full bg-slate-100 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                onClick={() => resolveAllProposals(false)}
+                title="全部拒绝"
+              >
                 <X size={15} />
                 全部拒绝
               </button>
@@ -120,7 +138,7 @@ export function GraphChatWorkspace() {
           ) : null}
         </div>
       ) : null}
-      <ChatPanel
+      <AgentPanel
         anchorId={anchorId}
         anchorLocked={anchorLocked}
         onAnchorLockChange={setAnchorLocked}
@@ -151,8 +169,17 @@ function proposalLabel(proposal: Proposal) {
   if (proposal.operation === "create_edge") {
     return "新增连接";
   }
+  if (proposal.operation === "edit_node") {
+    return "修改节点";
+  }
   if (proposal.operation === "split_node") {
     return "拆分节点";
+  }
+  if (proposal.operation === "delete_node") {
+    return "删除节点";
+  }
+  if (proposal.operation === "remove_edge") {
+    return "断开连接";
   }
   if (proposal.operation === "promote_to_workspace") {
     return "升级为工作区";

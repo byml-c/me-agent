@@ -53,6 +53,12 @@ def row_to_session(row: sqlite3.Row) -> dict[str, Any]:
 def row_to_message(row: sqlite3.Row) -> dict[str, Any]:
     item = dict_from_row(row)
     item["context_node_ids"] = loads(item.get("context_node_ids"), [])
+    item.setdefault("parent_message_id", None)
+    item.setdefault("source_message_id", None)
+    item.setdefault("variant_index", 0)
+    item.setdefault("status", "active")
+    item.setdefault("updated_at", item.get("created_at"))
+    item.setdefault("provider_response_id", None)
     return item
 
 
@@ -221,6 +227,12 @@ def get_edge(db: sqlite3.Connection, edge_id: str) -> dict[str, Any] | None:
     return row_to_edge(row) if row else None
 
 
+def get_edge_between(db: sqlite3.Connection, node_a_id: str, node_b_id: str) -> dict[str, Any] | None:
+    a, b = normalize_edge_nodes(node_a_id, node_b_id)
+    row = db.execute("SELECT * FROM edges WHERE node_a_id = ? AND node_b_id = ?", (a, b)).fetchone()
+    return row_to_edge(row) if row else None
+
+
 def update_edge(db: sqlite3.Connection, edge_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
     allowed = {"weight", "is_candidate"}
     values = {key: value for key, value in changes.items() if key in allowed and value is not None}
@@ -238,6 +250,10 @@ def delete_edge(db: sqlite3.Connection, edge_id: str) -> None:
     edge = get_edge(db, edge_id)
     db.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
     append_event(db, "EdgeRemoved", "user", {"edge_id": edge_id, "edge": edge})
+
+
+def archive_node(db: sqlite3.Connection, node_id: str, actor: str = "agent") -> dict[str, Any] | None:
+    return update_node(db, node_id, {"status": "archived"}, actor=actor)
 
 
 def neighbors(db: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:
@@ -432,24 +448,141 @@ def add_message(
     role: str,
     content: str,
     context_node_ids: list[str] | None = None,
+    parent_message_id: str | None = None,
+    source_message_id: str | None = None,
+    variant_index: int = 0,
+    provider_response_id: str | None = None,
 ) -> dict[str, Any]:
+    now = utc_now()
     message = {
         "id": new_id("msg"),
         "session_id": session_id,
         "role": role,
         "content": content,
         "context_node_ids": context_node_ids or [],
-        "created_at": utc_now(),
+        "parent_message_id": parent_message_id,
+        "source_message_id": source_message_id,
+        "variant_index": variant_index,
+        "provider_response_id": provider_response_id,
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
     }
     db.execute(
         """
-        INSERT INTO chat_messages (id,session_id,role,content,context_node_ids,created_at)
-        VALUES (?,?,?,?,?,?)
+        INSERT INTO chat_messages
+        (id,session_id,role,content,context_node_ids,parent_message_id,source_message_id,variant_index,status,created_at,updated_at,provider_response_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """,
-        (message["id"], session_id, role, content, dumps(message["context_node_ids"]), message["created_at"]),
+        (
+            message["id"],
+            session_id,
+            role,
+            content,
+            dumps(message["context_node_ids"]),
+            parent_message_id,
+            source_message_id,
+            variant_index,
+            "active",
+            now,
+            now,
+            provider_response_id,
+        ),
     )
-    db.execute("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (utc_now(), session_id))
+    db.execute("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (now, session_id))
     return message
+
+
+def get_message(db: sqlite3.Connection, message_id: str) -> dict[str, Any] | None:
+    row = db.execute("SELECT * FROM chat_messages WHERE id = ?", (message_id,)).fetchone()
+    return row_to_message(row) if row else None
+
+
+def update_message_content(db: sqlite3.Connection, message_id: str, content: str) -> dict[str, Any] | None:
+    message = get_message(db, message_id)
+    if not message:
+        return None
+    now = utc_now()
+    db.execute(
+        "UPDATE chat_messages SET content = ?, updated_at = ?, status = 'active' WHERE id = ?",
+        (content, now, message_id),
+    )
+    db.execute("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (now, message["session_id"]))
+    append_event(db, "ChatMessageEdited", "user", {"message_id": message_id, "session_id": message["session_id"]})
+    return get_message(db, message_id)
+
+
+def active_messages(db: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        "SELECT * FROM chat_messages WHERE session_id = ? AND status = 'active' ORDER BY created_at ASC",
+        (session_id,),
+    ).fetchall()
+    return [row_to_message(row) for row in rows]
+
+
+def active_message_before(db: sqlite3.Connection, session_id: str, message_id: str, role: str | None = None) -> dict[str, Any] | None:
+    message = get_message(db, message_id)
+    if not message:
+        return None
+    sql = """
+        SELECT *
+        FROM chat_messages
+        WHERE session_id = ? AND status = 'active' AND created_at < ?
+    """
+    params: list[Any] = [session_id, message["created_at"]]
+    if role:
+        sql += " AND role = ?"
+        params.append(role)
+    sql += " ORDER BY created_at DESC LIMIT 1"
+    row = db.execute(sql, params).fetchone()
+    return row_to_message(row) if row else None
+
+
+def archive_messages_after(db: sqlite3.Connection, session_id: str, message_id: str, include_self: bool = False) -> list[dict[str, Any]]:
+    message = get_message(db, message_id)
+    if not message:
+        return []
+    op = ">=" if include_self else ">"
+    rows = db.execute(
+        f"""
+        SELECT *
+        FROM chat_messages
+        WHERE session_id = ? AND status = 'active' AND created_at {op} ?
+        ORDER BY created_at ASC
+        """,
+        (session_id, message["created_at"]),
+    ).fetchall()
+    archived = [row_to_message(row) for row in rows]
+    if archived:
+        now = utc_now()
+        db.execute(
+            f"""
+            UPDATE chat_messages
+            SET status = 'superseded', updated_at = ?
+            WHERE session_id = ? AND status = 'active' AND created_at {op} ?
+            """,
+            (now, session_id, message["created_at"]),
+        )
+        db.execute("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        append_event(
+            db,
+            "ChatBranchSuperseded",
+            "user",
+            {"session_id": session_id, "from_message_id": message_id, "include_self": include_self, "count": len(archived)},
+        )
+    return archived
+
+
+def next_variant_index(db: sqlite3.Connection, source_message_id: str) -> int:
+    row = db.execute(
+        """
+        SELECT COALESCE(MAX(variant_index), 0) AS max_variant
+        FROM chat_messages
+        WHERE source_message_id = ? OR id = ?
+        """,
+        (source_message_id, source_message_id),
+    ).fetchone()
+    return int(row["max_variant"] or 0) + 1
 
 
 def get_session(db: sqlite3.Connection, session_id: str) -> dict[str, Any] | None:
@@ -458,7 +591,7 @@ def get_session(db: sqlite3.Connection, session_id: str) -> dict[str, Any] | Non
         return None
     session = row_to_session(row)
     messages = db.execute(
-        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM chat_messages WHERE session_id = ? AND status = 'active' ORDER BY created_at ASC",
         (session_id,),
     ).fetchall()
     session["messages"] = [row_to_message(message) for message in messages]
@@ -476,7 +609,7 @@ def list_sessions(db: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any
             """
             SELECT content
             FROM chat_messages
-            WHERE session_id = ? AND role = 'user'
+            WHERE session_id = ? AND role = 'user' AND status = 'active'
             ORDER BY created_at DESC
             LIMIT 1
             """,

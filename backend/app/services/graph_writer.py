@@ -137,9 +137,33 @@ def apply_proposal(db: sqlite3.Connection, proposal: dict[str, Any]) -> dict[str
             created_by="agent",
         )
         return {"edge": edge}
+    if operation == "edit_node":
+        node_id = payload.get("node_id") or (proposal["target_ids"][0] if proposal["target_ids"] else None)
+        if not node_id:
+            return {"ignored": True, "operation": operation, "reason": "missing node_id"}
+        changes = {key: payload.get(key) for key in ["title", "body", "summary", "memory", "is_workspace", "status"]}
+        node = graph_store.update_node(db, node_id, changes, actor="agent")
+        return {"node": node} if node else {"ignored": True, "operation": operation, "reason": "node not found"}
     if operation == "promote_to_workspace" and payload.get("node_id"):
         node = graph_store.update_node(db, payload["node_id"], {"is_workspace": True}, actor="agent")
         return {"node": node}
+    if operation == "delete_node":
+        node_id = payload.get("node_id") or (proposal["target_ids"][0] if proposal["target_ids"] else None)
+        if not node_id:
+            return {"ignored": True, "operation": operation, "reason": "missing node_id"}
+        node = graph_store.archive_node(db, node_id, actor="agent")
+        return {"node": node} if node else {"ignored": True, "operation": operation, "reason": "node not found"}
+    if operation == "remove_edge":
+        edge_id = payload.get("edge_id")
+        node_a_id = payload.get("node_a_id") or (proposal["target_ids"][0] if proposal["target_ids"] else None)
+        node_b_id = payload.get("node_b_id") or (proposal["target_ids"][1] if len(proposal["target_ids"]) > 1 else None)
+        edge = graph_store.get_edge(db, edge_id) if edge_id else None
+        if not edge and node_a_id and node_b_id:
+            edge = graph_store.get_edge_between(db, node_a_id, node_b_id)
+        if not edge:
+            return {"ignored": True, "operation": operation, "reason": "edge not found"}
+        graph_store.delete_edge(db, edge["id"])
+        return {"edge": edge}
     if operation == "split_node":
         created = [
             graph_store.create_node(db, item.get("title") or "拆分节点", item.get("body") or "", actor="agent")

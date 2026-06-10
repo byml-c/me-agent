@@ -123,5 +123,120 @@ def init_db() -> None:
               context_node_ids TEXT NOT NULL DEFAULT '[]',
               created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS library_files (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              description TEXT,
+              summary TEXT,
+              media_type TEXT,
+              source_path TEXT,
+              content TEXT NOT NULL DEFAULT '',
+              content_hash TEXT NOT NULL UNIQUE,
+              linked_node_ids TEXT NOT NULL DEFAULT '[]',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS library_entries (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              kind TEXT NOT NULL DEFAULT 'text',
+              description TEXT,
+              content TEXT NOT NULL DEFAULT '',
+              summary TEXT,
+              source_file_id TEXT REFERENCES library_files(id) ON DELETE SET NULL,
+              content_hash TEXT NOT NULL UNIQUE,
+              metadata TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS library_vectors (
+              item_id TEXT PRIMARY KEY,
+              item_type TEXT NOT NULL,
+              embedding TEXT NOT NULL,
+              content_hash TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
             """
         )
+        ensure_chat_message_columns(db)
+        ensure_library_file_columns(db)
+        ensure_library_entry_columns(db)
+        ensure_library_vector_table(db)
+
+
+def ensure_chat_message_columns(db: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(chat_messages)").fetchall()}
+    migrations = {
+        "parent_message_id": "ALTER TABLE chat_messages ADD COLUMN parent_message_id TEXT",
+        "source_message_id": "ALTER TABLE chat_messages ADD COLUMN source_message_id TEXT",
+        "variant_index": "ALTER TABLE chat_messages ADD COLUMN variant_index INTEGER NOT NULL DEFAULT 0",
+        "status": "ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+        "updated_at": "ALTER TABLE chat_messages ADD COLUMN updated_at TEXT",
+        "provider_response_id": "ALTER TABLE chat_messages ADD COLUMN provider_response_id TEXT",
+    }
+    for column, sql in migrations.items():
+        if column not in columns:
+            db.execute(sql)
+    db.execute("UPDATE chat_messages SET updated_at = created_at WHERE updated_at IS NULL")
+
+
+def ensure_library_file_columns(db: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(library_files)").fetchall()}
+    migrations = {
+        "description": "ALTER TABLE library_files ADD COLUMN description TEXT",
+        "summary": "ALTER TABLE library_files ADD COLUMN summary TEXT",
+        "media_type": "ALTER TABLE library_files ADD COLUMN media_type TEXT",
+        "source_path": "ALTER TABLE library_files ADD COLUMN source_path TEXT",
+        "content": "ALTER TABLE library_files ADD COLUMN content TEXT NOT NULL DEFAULT ''",
+        "content_hash": "ALTER TABLE library_files ADD COLUMN content_hash TEXT",
+        "linked_node_ids": "ALTER TABLE library_files ADD COLUMN linked_node_ids TEXT NOT NULL DEFAULT '[]'",
+        "created_at": "ALTER TABLE library_files ADD COLUMN created_at TEXT",
+        "updated_at": "ALTER TABLE library_files ADD COLUMN updated_at TEXT",
+    }
+    for column, sql in migrations.items():
+        if column not in columns:
+            db.execute(sql)
+    now = utc_now()
+    db.execute("UPDATE library_files SET linked_node_ids = '[]' WHERE linked_node_ids IS NULL")
+    db.execute("UPDATE library_files SET created_at = ? WHERE created_at IS NULL", (now,))
+    db.execute("UPDATE library_files SET updated_at = created_at WHERE updated_at IS NULL")
+
+
+def ensure_library_entry_columns(db: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(library_entries)").fetchall()}
+    migrations = {
+        "title": "ALTER TABLE library_entries ADD COLUMN title TEXT",
+        "kind": "ALTER TABLE library_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
+        "description": "ALTER TABLE library_entries ADD COLUMN description TEXT",
+        "content": "ALTER TABLE library_entries ADD COLUMN content TEXT NOT NULL DEFAULT ''",
+        "summary": "ALTER TABLE library_entries ADD COLUMN summary TEXT",
+        "source_file_id": "ALTER TABLE library_entries ADD COLUMN source_file_id TEXT",
+        "content_hash": "ALTER TABLE library_entries ADD COLUMN content_hash TEXT",
+        "metadata": "ALTER TABLE library_entries ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "ALTER TABLE library_entries ADD COLUMN created_at TEXT",
+        "updated_at": "ALTER TABLE library_entries ADD COLUMN updated_at TEXT",
+    }
+    for column, sql in migrations.items():
+        if column not in columns:
+            db.execute(sql)
+    now = utc_now()
+    db.execute("UPDATE library_entries SET metadata = '{}' WHERE metadata IS NULL")
+    db.execute("UPDATE library_entries SET created_at = ? WHERE created_at IS NULL", (now,))
+    db.execute("UPDATE library_entries SET updated_at = created_at WHERE updated_at IS NULL")
+
+
+def ensure_library_vector_table(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS library_vectors (
+          item_id TEXT PRIMARY KEY,
+          item_type TEXT NOT NULL,
+          embedding TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )

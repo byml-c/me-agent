@@ -7,6 +7,8 @@ from backend.app.api import (
     routes_chat,
     routes_edges,
     routes_events,
+    routes_files,
+    routes_library,
     routes_nodes,
     routes_proposals,
     routes_scripts,
@@ -86,6 +88,8 @@ def seed_if_empty() -> None:
 app.include_router(routes_nodes.router)
 app.include_router(routes_edges.router)
 app.include_router(routes_chat.router)
+app.include_router(routes_files.router)
+app.include_router(routes_library.router)
 app.include_router(routes_workspaces.router)
 app.include_router(routes_proposals.router)
 app.include_router(routes_events.router)

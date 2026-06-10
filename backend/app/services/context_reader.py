@@ -104,6 +104,19 @@ def read_context(
     }
 
 
+def search_nodes(db: sqlite3.Connection, query: str, limit: int = 8) -> list[dict[str, Any]]:
+    nodes = graph_store.list_nodes(db)
+    scored = [
+        (
+            lexical_relevance(query, f"{node['title']} {node.get('summary') or ''} {node.get('body') or ''}"),
+            node,
+        )
+        for node in nodes
+    ]
+    scored.sort(key=lambda item: (item[0], item[1]["access_count"], item[1]["updated_at"]), reverse=True)
+    return [node for score, node in scored if score > 0][:limit]
+
+
 def strengthen_coactivated_edges(db: sqlite3.Connection, node_ids: list[str]) -> None:
     node_set = set(node_ids)
     now = graph_store.utc_now() if hasattr(graph_store, "utc_now") else None

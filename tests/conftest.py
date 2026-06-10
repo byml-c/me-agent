@@ -34,12 +34,40 @@ def deterministic_llm(monkeypatch):
     def graph_edit_intent(user_message: str, context_summary: str, assistant_message: str):
         return llm.fallback_graph_intent(user_message)
 
+    def responses_chat_with_tools(
+        input_items,
+        tools,
+        execute_tool,
+        temperature=0.4,
+        max_tool_rounds=4,
+        on_tool_call=None,
+        on_text_delta=None,
+        on_reasoning_delta=None,
+        on_stream_event=None,
+        previous_response_id=None,
+        context=None,
+    ):
+        user_message = next((item.get("content", "") for item in reversed(input_items) if item.get("role") == "user"), "")
+        text = f"测试回复：{user_message}"
+        if on_reasoning_delta:
+            on_reasoning_delta("测试思考")
+        for chunk in ["测试", "流式", user_message]:
+            if on_text_delta:
+                on_text_delta(chunk)
+        return {
+            "text": text if not on_text_delta else "测试流式" + user_message,
+            "tool_results": [],
+            "response": {"id": "resp_test"},
+            "response_id": "resp_test",
+        }
+
     def call_graph_writer_model(*args, **kwargs):
         raise ValueError("network disabled in tests")
 
     monkeypatch.setattr(llm, "complete_chat", complete_chat)
     monkeypatch.setattr(llm, "stream_chat", stream_chat)
     monkeypatch.setattr(llm, "graph_edit_intent", graph_edit_intent)
+    monkeypatch.setattr(llm, "responses_chat_with_tools", responses_chat_with_tools)
     monkeypatch.setattr(graph_writer_agent, "call_graph_writer_model", call_graph_writer_model)
 
 

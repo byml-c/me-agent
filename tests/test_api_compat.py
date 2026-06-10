@@ -78,6 +78,30 @@ def test_node_edge_and_workspace_routes_keep_existing_contract(client):
     assert set(workspace_detail.json()) == {"workspace", "graph", "recent_events", "related_nodes"}
 
 
+def test_node_attachments_are_stored_and_scripts_run(client):
+    node = client.post("/nodes", json={"title": "附带资源", "body": "node"}).json()
+    updated = client.patch(
+        f"/nodes/{node['id']}",
+        json={
+            "memory": {
+                "attachments": {
+                    "databases": [{"id": "db_1", "name": "local", "path": "/tmp/example.sqlite"}],
+                    "files": [{"id": "file_1", "name": "notes", "path": "/tmp/notes.md"}],
+                    "scripts": [{"id": "script_1", "name": "hello", "language": "python", "code": "print('hello node')"}],
+                }
+            }
+        },
+    ).json()
+
+    assert updated["memory"]["attachments"]["databases"][0]["name"] == "local"
+    run = client.post(f"/nodes/{node['id']}/scripts/script_1/run", json={"args": {"x": 1}})
+
+    assert run.status_code == 200
+    payload = run.json()
+    assert payload["status"] == "completed"
+    assert payload["stdout"].strip() == "hello node"
+
+
 def test_stream_chat_emits_meta_delta_and_done(client):
     with client.stream(
         "POST",
@@ -91,3 +115,22 @@ def test_stream_chat_emits_meta_delta_and_done(client):
     assert "event: delta" in body
     assert "event: done" in body
     assert "测试流式流式测试" in body
+
+
+def test_edit_message_stream_emits_delta_and_done(client):
+    first = client.post("/chat", json={"message": "原始消息", "options": {"allow_proposals": False}})
+    session_id = first.json()["session_id"]
+    session = client.get(f"/chat/sessions/{session_id}").json()
+    user_message_id = next(message["id"] for message in session["messages"] if message["role"] == "user")
+
+    with client.stream(
+        "POST",
+        f"/chat/messages/{user_message_id}/edit/stream",
+        json={"content": "编辑后的消息", "context_budget": 4000},
+    ) as response:
+        assert response.status_code == 200
+        body = response.read().decode("utf-8")
+
+    assert "event: delta" in body
+    assert "event: done" in body
+    assert "测试流式编辑后的消息" in body

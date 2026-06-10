@@ -20,27 +20,8 @@ const nav = [
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>
-        <div className="app-shell">
-          <aside className="sidebar">
-            <Link className="brand" href="/">
-              <span className="brand-mark">M</span>
-              <span>Me.Agent</span>
-            </Link>
-            <nav>
-              {nav.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <Link key={item.href} className="nav-item" href={item.href}>
-                    <Icon size={18} />
-                    <span>{item.label}</span>
-                  </Link>
-                );
-              })}
-            </nav>
-          </aside>
-          <main className="main-panel">{children}</main>
-        </div>
+      <body className="min-h-screen min-w-screen bg-[radial-gradient(circle_at_top,#f7f8f6_0%,#eef2ee_35%,#e6ebe7_100%)] text-ink antialiased">
+        <main className="w-screen h-screen">{children}</main>
       </body>
     </html>
   );
