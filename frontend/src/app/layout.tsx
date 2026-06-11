@@ -20,8 +20,8 @@ const nav = [
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen min-w-screen bg-[radial-gradient(circle_at_top,#f7f8f6_0%,#eef2ee_35%,#e6ebe7_100%)] text-ink antialiased">
-        <main className="w-screen h-screen">{children}</main>
+      <body className="h-dvh w-dvw overflow-hidden bg-[radial-gradient(circle_at_top,#f7f8f6_0%,#eef2ee_35%,#e6ebe7_100%)] text-ink antialiased">
+        <main className="h-dvh w-dvw overflow-hidden">{children}</main>
       </body>
     </html>
   );

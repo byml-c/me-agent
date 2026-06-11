@@ -1,24 +1,17 @@
 "use client";
 
-import { type Dispatch, type RefObject, type SetStateAction, useEffect, useState } from "react";
-import { Archive, CircleHelp, Code2, Database, Play, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
+import { type Dispatch, type ReactNode, type RefObject, type SetStateAction, useEffect, useState } from "react";
+import { Archive, Code2, Database, Pencil, Save, Sparkles } from "lucide-react";
 import { api } from "@/api/client";
 import { getNodeIcon, type NodeIconKey, type NodeIconOption } from "@/lib/nodeIcons";
-import type { MeNode, NodeAttachments, NodeScriptAttachment, NodeScriptRunResult } from "@/types";
-
-export type NodeEditorDraft = {
-  title: string;
-  summary: string;
-  body: string;
-  icon: NodeIconKey;
-  attachments: NodeAttachments;
-  is_workspace: boolean;
-  status: MeNode["status"];
-};
+import { MarkdownContent } from "@/components/MarkdownContent";
+import type { MeNode, NodeScriptAttachment, NodeScriptRunResult } from "@/types";
+import { LongTextEditorDialog } from "@/components/node-editor/LongTextEditorDialog";
+import { type LongTextEditorTarget, type NodeEditorDraft } from "@/components/node-editor/types";
+export type { NodeEditorDraft } from "@/components/node-editor/types";
 
 type NodeEditorPaneProps = {
   activeNode: MeNode | null;
-  anchorId: string;
   draft: NodeEditorDraft | null;
   filteredNodeIconOptions: NodeIconOption[];
   iconPickerOpen: boolean;
@@ -27,28 +20,13 @@ type NodeEditorPaneProps = {
   nodeSaving: boolean;
   nodeTitleRef: RefObject<HTMLInputElement | null>;
   scriptResults: Record<string, NodeScriptRunResult>;
-  onAddDatabase: () => void;
-  onAddScript: () => void;
-  onClose: () => void;
-  onDiscard: () => void;
   onDraftChange: Dispatch<SetStateAction<NodeEditorDraft | null>>;
+  onDraftCommit: (draft: NodeEditorDraft) => void;
   onIconPickerOpenChange: Dispatch<SetStateAction<boolean>>;
   onIconSearchChange: Dispatch<SetStateAction<string>>;
-  onImportDatabaseAttachment: (entryId: string, selectedFile: File | null) => void;
-  onRemoveAttachment: <T extends keyof NodeAttachments>(key: T, id: string) => void;
   onRunScript: (script: NodeScriptAttachment) => void;
-  onSave: () => void;
-  onUpdateAttachment: <T extends keyof NodeAttachments>(key: T, id: string, changes: Partial<NodeAttachments[T][number]>) => void;
 };
 
-const SCRIPT_RUNTIME_HELP = [
-  "函数: open_app(app, args=[], once=True)",
-  "函数: list_node_files(), get_node_file(file_id|name), log(value)",
-  "变量: NODE_ID, SCRIPT_ARGS, NODE_DATABASES, NODE_FILES, TRIGGER",
-  "open_app 支持字符串参数，会自动展开 $HOME 和 ~"
-].join("\n");
-
-const ghostButtonClass = "grid h-8 w-8 place-items-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-900/20";
 const fieldClass = "w-full min-w-0 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-600 focus:bg-white focus:ring-4 focus:ring-emerald-600/10";
 const smallFieldClass = "w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 outline-none transition focus:border-emerald-600 focus:bg-white focus:ring-4 focus:ring-emerald-600/10";
 
@@ -161,7 +139,6 @@ export function NodeEditor({ nodeId, onSaved }: Props) {
 
 export function NodeEditorPane({
   activeNode,
-  anchorId,
   draft,
   filteredNodeIconOptions,
   iconPickerOpen,
@@ -170,27 +147,38 @@ export function NodeEditorPane({
   nodeSaving,
   nodeTitleRef,
   scriptResults,
-  onAddDatabase,
-  onAddScript,
-  onClose,
-  onDiscard,
   onDraftChange,
+  onDraftCommit,
   onIconPickerOpenChange,
   onIconSearchChange,
-  onImportDatabaseAttachment,
-  onRemoveAttachment,
-  onRunScript,
-  onSave,
-  onUpdateAttachment
+  onRunScript
 }: NodeEditorPaneProps) {
+  const [editorTarget, setEditorTarget] = useState<LongTextEditorTarget | null>(null);
+
   if (!draft) {
     return <div className="grid place-items-center p-6 text-sm text-slate-500">选择一个节点后显示属性。</div>;
   }
 
+  function updateDraftAndCommit(change: Partial<NodeEditorDraft>) {
+    const nextDraft = { ...draft, ...change } as NodeEditorDraft;
+    onDraftChange(nextDraft);
+    onDraftCommit(nextDraft);
+  }
+
   return (
-    <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
-      <div className="grid min-h-0 gap-3 overflow-auto p-3">
-        <section className="grid gap-3 rounded-3xl border border-slate-200 bg-white p-3">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {editorTarget ? (
+        <LongTextEditorDialog
+          draft={draft}
+          target={editorTarget}
+          scriptResults={scriptResults}
+          onClose={() => setEditorTarget(null)}
+          onDraftChange={onDraftChange}
+          onRunScript={onRunScript}
+        />
+      ) : null}
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(max-content,1fr)_auto] gap-2 overflow-auto p-3">
+        <section className="grid min-h-0 grid-rows-[auto_max-content_minmax(max-content,1fr)] gap-2 rounded-3xl border border-slate-200 bg-white p-3">
           <div className="grid grid-cols-[44px_minmax(0,1fr)] items-end gap-2">
             <div className="relative z-[2]">
               <button
@@ -242,174 +230,56 @@ export function NodeEditorPane({
               />
             </label>
           </div>
-          <label className="grid gap-2 text-xs font-semibold text-slate-500">
-            摘要
-            <textarea
-              className={`${fieldClass} min-h-[clamp(58px,11vh,92px)] resize-none leading-6`}
-              value={draft.summary}
-              onChange={(event) => onDraftChange((current) => current ? { ...current, summary: event.target.value } : current)}
-            />
-          </label>
-          <label className="grid gap-2 text-xs font-semibold text-slate-500">
-            正文
-            <textarea
-              className={`${fieldClass} min-h-[120px] resize-y leading-6`}
-              value={draft.body}
-              onChange={(event) => onDraftChange((current) => current ? { ...current, body: event.target.value } : current)}
-            />
-          </label>
+          <ExpandableTextPreview
+            label="摘要"
+            value={draft.summary}
+            placeholder="暂无摘要"
+            onOpen={() => setEditorTarget({ kind: "summary" })}
+          />
+          <ExpandableTextPreview
+            label="正文"
+            value={draft.body}
+            placeholder="暂无正文"
+            markdown
+            onOpen={() => setEditorTarget({ kind: "body" })}
+          />
         </section>
 
-        <section className="grid gap-2 rounded-3xl border border-slate-200 bg-slate-50 p-3">
-          <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-500">
-            <span className="inline-flex items-center gap-1.5">
-              <Database size={13} /> 知识库
-            </span>
-            <button className={ghostButtonClass} title="添加知识条目" onClick={onAddDatabase} type="button">
-              <Plus size={13} />
-            </button>
-          </div>
-          <div className="grid gap-2">
-            {draft.attachments.databases.map((database) => (
-              <div key={database.id} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                <div className="grid grid-cols-[minmax(88px,0.42fr)_minmax(0,1fr)_30px] items-center gap-1.5">
-                  <input
-                    className={`${smallFieldClass} h-9 rounded-xl`}
-                    value={database.name}
-                    placeholder="名称"
-                    onChange={(event) => onUpdateAttachment("databases", database.id, { name: event.target.value })}
-                  />
-                  <input
-                    className={`${smallFieldClass} h-9 rounded-xl`}
-                    value={database.summary ?? ""}
-                    placeholder="摘要（供 AI 检索，可留空由后台生成）"
-                    onChange={(event) => onUpdateAttachment("databases", database.id, { summary: event.target.value, description: event.target.value })}
-                  />
-                  <button className={ghostButtonClass} title="移除" onClick={() => onRemoveAttachment("databases", database.id)} type="button">
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="inline-flex h-[30px] w-fit cursor-pointer items-center justify-center rounded-full border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
-                    上传文件
-                    <input
-                      type="file"
-                      hidden
-                      onChange={(event) => {
-                        onImportDatabaseAttachment(database.id, event.target.files?.[0] ?? null);
-                        event.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                  <span className="inline-flex h-6 items-center rounded-full bg-emerald-50 px-3 text-xs font-semibold text-emerald-700">{database.kind === "file" ? "文件" : "文本"}</span>
-                  {database.kind === "file" ? (
-                    <input
-                      className={`${smallFieldClass} h-[30px] max-w-[180px] rounded-full px-3 py-1.5`}
-                      value={database.media_type ?? ""}
-                      placeholder="media type"
-                      onChange={(event) => onUpdateAttachment("databases", database.id, { media_type: event.target.value })}
-                    />
-                  ) : null}
-                </div>
-                <textarea
-                  className={`${fieldClass} min-h-[72px] max-h-[180px] resize-y rounded-xl text-xs leading-6`}
-                  value={database.content ?? ""}
-                  placeholder="输入知识正文，或上传文本文件。保存后写入后端统一向量知识库。"
-                  onChange={(event) => onUpdateAttachment("databases", database.id, { content: event.target.value, kind: database.kind ?? "text" })}
-                />
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="grid gap-2 rounded-3xl border border-slate-200 bg-slate-50 p-3">
-          <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-500">
-            <span className="inline-flex items-center gap-1.5">
-              <Code2 size={13} /> 脚本
-            </span>
-            <div className="flex items-center gap-2">
-              <div className="group relative inline-flex h-[26px] w-[26px] items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="脚本运行时帮助">
-                <CircleHelp size={13} />
-                <div className="absolute right-0 top-[calc(100%+8px)] w-[320px] rounded-xl bg-slate-900 px-3 py-2 text-[11px] leading-5 text-emerald-50 opacity-0 shadow-[0_14px_28px_rgba(15,23,42,0.16)] transition group-hover:opacity-100">
-                  {SCRIPT_RUNTIME_HELP}
-                </div>
-              </div>
-              <button className={ghostButtonClass} title="添加脚本" onClick={onAddScript} type="button">
-                <Plus size={13} />
-              </button>
-            </div>
-          </div>
-          <div className="grid gap-2">
-            {draft.attachments.scripts.map((script) => (
-              <div key={script.id} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                <div className="grid grid-cols-[minmax(0,1fr)_30px_30px] items-center gap-1.5">
-                  <input
-                    className={`${smallFieldClass} h-9 rounded-xl`}
-                    value={script.name}
-                    placeholder="脚本名称"
-                    onChange={(event) => onUpdateAttachment("scripts", script.id, { name: event.target.value })}
-                  />
-                  <button className={ghostButtonClass} title="运行脚本" onClick={() => onRunScript(script)} type="button">
-                    <Play size={13} />
-                  </button>
-                  <button className={ghostButtonClass} title="移除" onClick={() => onRemoveAttachment("scripts", script.id)} type="button">
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-                <textarea
-                  className={`${fieldClass} min-h-[96px] rounded-xl font-mono text-xs leading-6`}
-                  value={script.code}
-                  spellCheck={false}
-                  onChange={(event) => onUpdateAttachment("scripts", script.id, { code: event.target.value })}
-                />
-                <div className="flex flex-wrap gap-3">
-                  <label className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-slate-700">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-600/20"
-                      checked={Boolean(script.trigger_on_enter)}
-                      onChange={(event) => onUpdateAttachment("scripts", script.id, { trigger_on_enter: event.target.checked })}
-                    />
-                    主动进入节点时执行
-                  </label>
-                  <label className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-slate-700">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-600/20"
-                      checked={Boolean(script.trigger_on_ai_switch)}
-                      onChange={(event) => onUpdateAttachment("scripts", script.id, { trigger_on_ai_switch: event.target.checked })}
-                    />
-                    AI 自动切换到该节点时执行
-                  </label>
-                </div>
-                {scriptResults[script.id] ? (
-                  <pre className="max-h-40 overflow-auto rounded-xl border border-slate-200 bg-slate-900 p-3 text-[11px] leading-5 text-emerald-50 whitespace-pre-wrap">
-                    {formatScriptResult(scriptResults[script.id])}
-                  </pre>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </section>
+        <div className="grid gap-2">
+          <CollectionButton
+            icon={<Database size={14} />}
+            label="知识库"
+            count={draft.attachments.databases.length}
+            unit="个条目"
+            onOpen={() => setEditorTarget({ kind: "database" })}
+          />
+          <CollectionButton
+            icon={<Code2 size={14} />}
+            label="脚本"
+            count={draft.attachments.scripts.length}
+            unit="个脚本"
+            onOpen={() => setEditorTarget({ kind: "script" })}
+          />
+        </div>
       </div>
 
-      <div className="grid gap-2 border-t border-slate-200 p-3">
-        <div className="flex items-end justify-between gap-3">
-          <label className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-slate-700">
+      <div className="grid shrink-0 gap-1 border-t border-slate-200 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
             <input
               type="checkbox"
-              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-600/20"
+              className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-600/20"
               checked={draft.is_workspace}
-              onChange={(event) => onDraftChange((current) => current ? { ...current, is_workspace: event.target.checked } : current)}
+              onChange={(event) => updateDraftAndCommit({ is_workspace: event.target.checked })}
             />
             工作区
           </label>
-          <label className="grid min-w-[132px] gap-2 text-xs font-semibold text-slate-500">
-            状态
+          <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-slate-500">
+            <span className="shrink-0">状态</span>
             <select
-              className={`${smallFieldClass} h-10 rounded-full`}
+              className="h-7 w-[92px] rounded-full border border-slate-200 bg-slate-50 px-2 py-[3px] text-center text-xs leading-4 text-slate-900 outline-none transition focus:border-emerald-600 focus:bg-white focus:ring-4 focus:ring-emerald-600/10"
               value={draft.status}
-              onChange={(event) => onDraftChange((current) => current ? { ...current, status: event.target.value as MeNode["status"] } : current)}
+              onChange={(event) => updateDraftAndCommit({ status: event.target.value as MeNode["status"] })}
             >
               <option value="active">active</option>
               <option value="dense">dense</option>
@@ -417,18 +287,10 @@ export function NodeEditorPane({
             </select>
           </label>
         </div>
-        <div className="flex justify-between gap-3 text-[11px] text-slate-400">
-          <span>updated {activeNode?.updated_at ?? "-"}</span>
-          <span>access {activeNode?.access_count ?? 0}</span>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <button className="inline-flex h-10 items-center justify-center rounded-full bg-slate-100 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-200" onClick={onDiscard} type="button">
-            放弃修改
-          </button>
-          <button className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50" onClick={onSave} disabled={nodeSaving || !draft.title.trim()} type="button">
-            <Save size={15} />
-            {nodeSaving ? "保存中" : "保存"}
-          </button>
+        <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400">
+          <span className="min-w-0 truncate">updated {formatDisplayDateTime(activeNode?.updated_at)}</span>
+          <span className="shrink-0">access {activeNode?.access_count ?? 0}</span>
+          <span className="shrink-0 font-medium">{nodeSaving ? "保存中..." : "自动保存"}</span>
         </div>
       </div>
     </div>
@@ -448,9 +310,56 @@ function NodeIconGlyph({ iconKey }: { iconKey: NodeIconKey }) {
   );
 }
 
-function formatScriptResult(result: NodeScriptRunResult): string {
-  const header = `status=${result.status} returncode=${result.returncode ?? "-"} trigger=${result.trigger ?? "manual_run"}`;
-  const stdout = result.stdout ? `\nstdout:\n${result.stdout}` : "";
-  const stderr = result.stderr ? `\nstderr:\n${result.stderr}` : "";
-  return `${header}${stdout}${stderr}`;
+function ExpandableTextPreview({ label, value, placeholder, markdown = false, onOpen }: { label: string; value: string; placeholder: string; markdown?: boolean; onOpen: () => void }) {
+  return (
+    <section className="grid min-h-0 grid-rows-[auto_minmax(max-content,1fr)] gap-1.5 text-xs font-semibold text-slate-500">
+      <span>{label}</span>
+      <button
+        className="h-full w-full overflow-auto rounded-2xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-left text-sm font-normal leading-5 text-slate-700 transition hover:border-slate-300 hover:bg-white"
+        onClick={onOpen}
+        type="button"
+      >
+        {markdown && value ? (
+          <MarkdownContent content={value} className="text-sm" />
+        ) : (
+          <span className="block whitespace-pre-wrap">{value || placeholder}</span>
+        )}
+      </button>
+    </section>
+  );
+}
+
+function CollectionButton({ icon, label, count, unit, onOpen }: { icon: ReactNode; label: string; count: number; unit: string; onOpen: () => void }) {
+  return (
+    <button
+      className="flex min-h-12 w-full items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-slate-50 px-3 py-2 text-left transition hover:border-slate-300 hover:bg-white"
+      onClick={onOpen}
+      type="button"
+    >
+      <span className="inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-900">
+        {icon}
+        <span className="truncate">{label}</span>
+      </span>
+      <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500">
+        {count} {unit}
+        <Pencil size={13} />
+      </span>
+    </button>
+  );
+}
+
+function formatDisplayDateTime(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
 }

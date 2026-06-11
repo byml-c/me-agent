@@ -21,6 +21,7 @@ SYSTEM_PROMPT = """你是 Me.Agent，一个以个人认知图为核心的长期�
 只有在上下文确实缺失、操作有风险、或用户明确要求深入分析时，才展开不确定性和取舍。
 普通对话用简洁结论和必要步骤回答；图编辑请求优先调用工具，再用一句话说明结果。
 当用户明确要求记录、整理、修改节点，或本轮出现值得长期保存的信息时，优先使用可用工具读写个人认知图。
+当你判断对话应该聚焦到另一个已有节点时，必须调用 switch_node；不要只在文字中说明要切换。
 当你需要引用后端统一维护的知识库资料时，优先用 search_library 搜索文本/文件条目，再用 read_library_entry 读取完整内容；只有明确需要按文件维度操作时再用 search_files / read_file。
 如果工具返回 review_required=true，说明变更已进入用户审核；你只需自然说明已放入待确认，不要声称已经永久写入。
 只有当工具结果实际返回 proposal 时，才能说“已放入待确认/审核”。只有当工具结果 review_required=false 且 ok=true 时，才能说“已经更新/生效”。
@@ -283,15 +284,16 @@ def responses_chat_with_tools(
                 arguments = json.loads(call.get("arguments") or "{}")
             except json.JSONDecodeError:
                 arguments = {}
+            result = execute_tool(call.get("name") or "", arguments)
             if on_tool_call:
                 on_tool_call(
                     {
                         "name": call.get("name") or "",
                         "arguments": arguments,
                         "call_id": call.get("call_id"),
+                        "result": result,
                     }
                 )
-            result = execute_tool(call.get("name") or "", arguments)
             tool_results.append({"call": call, "result": result})
             function_outputs.append(
                 {

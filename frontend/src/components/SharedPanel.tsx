@@ -24,7 +24,7 @@ type PanelWindow = {
 const ghostButtonClass = "grid h-8 w-8 place-items-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-900/20";
 
 export function SharedPanel({ open, view, headerControls, children, onClose, onViewChange }: SharedPanelProps) {
-  const [panelWindow, setPanelWindow] = useState<PanelWindow>({ x: 0, y: 76, width: 480, height: 720 });
+  const [panelWindow, setPanelWindow] = useState<PanelWindow>({ x: 0, y: 85, width: 480, height: 720 });
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
 
   useEffect(() => {
@@ -67,7 +67,7 @@ export function SharedPanel({ open, view, headerControls, children, onClose, onV
 
   return (
     <section
-      className="pointer-events-auto absolute left-auto top-[76px] right-[18px] bottom-[18px] grid w-[min(460px,calc(100vw-36px))] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-[32px] border border-slate-200/80 bg-white/96 shadow-[0_28px_90px_rgba(20,24,22,0.14)] backdrop-blur-2xl resize"
+      className="pointer-events-auto absolute left-auto top-[76px] right-[18px] bottom-[18px] grid max-h-[calc(100dvh-36px)] max-w-[calc(100dvw-36px)] w-[min(460px,calc(100vw-36px))] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-[16px] border border-slate-200/80 bg-white/96 shadow-[0_28px_90px_rgba(20,24,22,0.14)] backdrop-blur-2xl resize"
       style={{
         left: panelWindow.x,
         top: panelWindow.y,
@@ -115,18 +115,20 @@ export function SharedPanel({ open, view, headerControls, children, onClose, onV
           <X size={16} />
         </button>
       </div>
-      {children}
+      <div className="min-h-0 overflow-hidden">
+        {children}
+      </div>
     </section>
   );
 }
 
 function defaultPanelWindow(): PanelWindow {
   if (typeof window === "undefined") {
-    return { x: 0, y: 48, width: 540, height: 760 };
+    return { x: 0, y: 85, width: 540, height: 760 };
   }
   const width = Math.min(600, Math.max(460, window.innerWidth * 0.36));
-  const y = window.innerHeight < 820 ? 16 : 48;
-  const height = Math.min(window.innerHeight - y - 16, Math.max(680, window.innerHeight * 0.88));
+  const y = window.innerHeight < 820 ? 16 : 85;
+  const height = Math.min(window.innerHeight - y - 16, Math.max(560, window.innerHeight * 0.88));
   return {
     x: Math.max(16, window.innerWidth - width - 18),
     y,

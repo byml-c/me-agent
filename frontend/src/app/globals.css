@@ -1,4 +1,5 @@
 @import "@xyflow/react/dist/style.css";
+@import "github-markdown-css/github-markdown-light.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -13,12 +14,16 @@
 }
 
 html {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
   background: var(--background);
   color: var(--text);
   font-family:
@@ -47,4 +52,62 @@ select {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+.me-graph-node {
+  fill: #f8faf9;
+  stroke: rgba(22, 30, 26, 0.12);
+  stroke-width: 1px;
+}
+
+.me-graph-node--workspace {
+  fill: #dbeafe;
+  stroke: rgba(59, 130, 246, 0.45);
+}
+
+.me-graph-node--dense {
+  fill: #fed7aa;
+  stroke: rgba(234, 88, 12, 0.48);
+}
+
+.me-graph-node--anchor {
+  fill: #ffffff;
+  stroke: rgba(17, 24, 20, 0.55);
+  stroke-width: 2.2px;
+}
+
+.me-graph-node--workspace.me-graph-node--anchor {
+  fill: #dbeafe;
+  stroke: rgba(37, 99, 235, 0.62);
+}
+
+.me-graph-node--dense.me-graph-node--anchor {
+  fill: #fed7aa;
+  stroke: rgba(194, 65, 12, 0.66);
+}
+
+.me-graph-node--preview {
+  fill: #fffaf2;
+  stroke: rgba(184, 118, 43, 0.7);
+  stroke-width: 2px;
+  stroke-dasharray: 5 5;
+}
+
+.me-markdown.markdown-body {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.me-markdown.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.me-markdown.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.me-markdown.markdown-body pre {
+  max-width: 100%;
 }

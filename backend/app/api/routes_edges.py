@@ -33,7 +33,10 @@ def create_edge(payload: EdgeCreate):
 @router.patch("/{edge_id}")
 def update_edge(edge_id: str, payload: EdgeUpdate):
     with get_db() as db:
-        edge = graph_store.update_edge(db, edge_id, payload.model_dump(exclude_unset=True))
+        try:
+            edge = graph_store.update_edge(db, edge_id, payload.model_dump(exclude_unset=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not edge:
             raise HTTPException(status_code=404, detail="edge not found")
         return edge

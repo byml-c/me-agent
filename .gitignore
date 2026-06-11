@@ -6,6 +6,10 @@ __pycache__/
 .venv/
 *.egg-info/
 data/
+log/
+scripts/*
+!scripts/utils.py
+!scripts/runner.py
 frontend/node_modules/
 frontend/.next/
 frontend/out/

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
+
 
 def test_default_seed_nodes_are_user_facing_workspaces(client):
     nodes = client.get("/nodes").json()
@@ -78,6 +82,56 @@ def test_node_edge_and_workspace_routes_keep_existing_contract(client):
     assert set(workspace_detail.json()) == {"workspace", "graph", "recent_events", "related_nodes"}
 
 
+def test_directed_edges_preserve_order_and_allow_reverse(client):
+    node_a = client.post("/nodes", json={"title": "Directed A"}).json()
+    node_b = client.post("/nodes", json={"title": "Directed B"}).json()
+
+    forward = client.post("/edges", json={"node_a_id": node_a["id"], "node_b_id": node_b["id"], "weight": 0.8}).json()
+    reverse = client.post("/edges", json={"node_a_id": node_b["id"], "node_b_id": node_a["id"], "weight": 0.4}).json()
+
+    assert forward["node_a_id"] == node_a["id"]
+    assert forward["node_b_id"] == node_b["id"]
+    assert reverse["node_a_id"] == node_b["id"]
+    assert reverse["node_b_id"] == node_a["id"]
+    assert forward["id"] != reverse["id"]
+
+    extra = client.post("/nodes", json={"title": "Directed C"}).json()
+    turned = client.patch(f"/edges/{forward['id']}", json={"node_a_id": node_b["id"], "node_b_id": extra["id"]})
+    assert turned.status_code == 200
+    assert turned.json()["node_a_id"] == node_b["id"]
+    assert turned.json()["node_b_id"] == extra["id"]
+
+
+def test_batch_graph_actions_ignore_candidate_edges(client):
+    parent = client.post("/nodes", json={"title": "Parent"}).json()
+    child = client.post("/nodes", json={"title": "Child"}).json()
+    reference = client.post("/nodes", json={"title": "Reference"}).json()
+    real_edge = client.post("/edges", json={"node_a_id": parent["id"], "node_b_id": child["id"], "weight": 0.9}).json()
+    candidate_edge = client.post(
+        "/edges",
+        json={"node_a_id": reference["id"], "node_b_id": child["id"], "weight": 0.35, "is_candidate": True},
+    ).json()
+
+    inserted = client.post("/nodes/graph-actions/insert-between", json={"node_ids": [parent["id"], child["id"]], "title": "Middle"})
+    assert inserted.status_code == 200
+    middle = inserted.json()["node"]
+    graph = client.get("/nodes/graph").json()
+    edges = graph["edges"]
+    assert not any(edge["id"] == real_edge["id"] for edge in edges)
+    assert any(edge["node_a_id"] == parent["id"] and edge["node_b_id"] == middle["id"] and not edge["is_candidate"] for edge in edges)
+    assert any(edge["node_a_id"] == middle["id"] and edge["node_b_id"] == child["id"] and not edge["is_candidate"] for edge in edges)
+    assert any(edge["id"] == candidate_edge["id"] and edge["is_candidate"] for edge in edges)
+
+    cut = client.post("/nodes/graph-actions/add-cutpoint", json={"node_ids": [child["id"]], "title": "Cut"})
+    assert cut.status_code == 200
+    cutpoint = cut.json()["node"]
+    graph = client.get("/nodes/graph").json()
+    edges = graph["edges"]
+    assert any(edge["node_a_id"] == middle["id"] and edge["node_b_id"] == cutpoint["id"] and not edge["is_candidate"] for edge in edges)
+    assert any(edge["node_a_id"] == cutpoint["id"] and edge["node_b_id"] == child["id"] and not edge["is_candidate"] for edge in edges)
+    assert any(edge["id"] == candidate_edge["id"] and edge["node_a_id"] == reference["id"] and edge["node_b_id"] == child["id"] and edge["is_candidate"] for edge in edges)
+
+
 def test_node_attachments_are_stored_and_scripts_run(client):
     node = client.post("/nodes", json={"title": "附带资源", "body": "node"}).json()
     updated = client.patch(
@@ -98,8 +152,22 @@ def test_node_attachments_are_stored_and_scripts_run(client):
 
     assert run.status_code == 200
     payload = run.json()
-    assert payload["status"] == "completed"
-    assert payload["stdout"].strip() == "hello node"
+    assert payload["status"] == "started"
+    assert payload["log_path"]
+    assert Path(payload["script_path"]).name == f"{node['id']}-script_1.py"
+    log_payload = wait_for_script_log(Path(payload["log_path"]))
+    assert log_payload["status"] == "completed"
+    assert log_payload["stdout"].strip() == "hello node"
+    assert log_payload["code"] == "print('hello node')"
+
+
+def wait_for_script_log(path: Path) -> dict:
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        time.sleep(0.05)
+    raise AssertionError(f"script log was not written: {path}")
 
 
 def test_stream_chat_emits_meta_delta_and_done(client):

@@ -34,6 +34,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "switch_node",
+        "description": "将对话焦点切换到一个已有节点。该工具不修改图结构，只用于让 UI 聚焦到更相关的节点。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["node_id", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "search_library",
         "description": "搜索后端统一维护的知识库。知识库同时包含文本条目和文件条目。",
         "parameters": {
@@ -86,7 +100,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "create_node",
-        "description": "把本轮对话中明确值得长期保存的信息沉淀为新节点。",
+        "description": "把本轮对话中明确值得长期保存的信息沉淀为新节点。默认创建孤立节点；只有当新节点确实应直接连接到已有节点时，才填写 link_to_node_ids。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -192,6 +206,8 @@ def execute_tool(db: sqlite3.Connection, name: str, arguments: dict[str, Any], c
         limit = int(arguments.get("limit") or 8)
         nodes = context_reader.search_nodes(db, query, limit=max(1, min(limit, 12)))
         return {"ok": True, "nodes": compact_nodes(nodes)}
+    if name == "switch_node":
+        return switch_node(db, arguments)
     if name == "search_library":
         query = str(arguments.get("query") or "")
         kind = str(arguments.get("kind") or "") or None
@@ -251,7 +267,7 @@ def execute_tool(db: sqlite3.Connection, name: str, arguments: dict[str, Any], c
 
 
 def create_node(db: sqlite3.Connection, arguments: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    target_ids = safe_node_ids(db, arguments.get("link_to_node_ids") or context.get("anchor_nodes", []))
+    target_ids = safe_node_ids(db, arguments.get("link_to_node_ids"))
     proposal = graph_store.create_proposal(
         db,
         operation="create_node",
@@ -267,6 +283,20 @@ def create_node(db: sqlite3.Connection, arguments: dict[str, Any], context: dict
         risk_level="medium",
     )
     return {"ok": True, "review_required": True, "proposal": proposal}
+
+
+def switch_node(db: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, Any]:
+    node_id = str(arguments.get("node_id") or "")
+    node = graph_store.get_node(db, node_id)
+    if not node:
+        return {"ok": False, "error": "node not found"}
+    return {
+        "ok": True,
+        "review_required": False,
+        "node_id": node["id"],
+        "node": compact_nodes([node])[0],
+        "reason": str(arguments.get("reason") or "模型切换对话焦点。"),
+    }
 
 
 def update_node(db: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, Any]:

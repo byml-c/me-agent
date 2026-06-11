@@ -29,8 +29,26 @@ class EdgeCreate(BaseModel):
 
 
 class EdgeUpdate(BaseModel):
+    node_a_id: str | None = None
+    node_b_id: str | None = None
     weight: float | None = None
     is_candidate: bool | None = None
+
+
+class NodeBatchArchiveRequest(BaseModel):
+    node_ids: list[str]
+
+
+class InsertNodeBetweenRequest(BaseModel):
+    node_ids: list[str]
+    title: str = "中间节点"
+    body: str = ""
+
+
+class AddCutpointRequest(BaseModel):
+    node_ids: list[str]
+    title: str = "割点"
+    body: str = ""
 
 
 class ChatOptions(BaseModel):

@@ -21,6 +21,14 @@ export type NodeScriptAttachment = {
   description?: string;
   trigger_on_enter?: boolean;
   trigger_on_ai_switch?: boolean;
+  schedule_rules?: NodeScriptScheduleRule[];
+};
+
+export type NodeScriptScheduleRule = {
+  id: string;
+  kind: "daily" | "weekly";
+  time: string;
+  weekday?: number;
 };
 
 export type NodeFileAttachment = {
@@ -43,11 +51,14 @@ export type NodeAttachments = {
 export type NodeScriptRunResult = {
   script_id: string;
   node_id: string;
-  status: "completed" | "failed" | "timeout" | "blocked";
+  status: "started" | "completed" | "failed" | "timeout" | "blocked";
   returncode: number | null;
   stdout: string;
   stderr: string;
   trigger?: string;
+  pid?: number;
+  log_path?: string;
+  script_path?: string;
 };
 
 export type LibraryFile = {
@@ -95,7 +106,9 @@ export type MeNode = {
 
 export type MeEdge = {
   id: string;
+  /** Directed source/parent node id. Candidate edges remain visual/reference-only. */
   node_a_id: string;
+  /** Directed target/child node id. */
   node_b_id: string;
   weight: number;
   access_count: number;

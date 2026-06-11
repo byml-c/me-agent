@@ -15,7 +15,7 @@ def new_id(prefix: str) -> str:
 def normalize_edge_nodes(a: str, b: str) -> tuple[str, str]:
     if a == b:
         raise ValueError("edge endpoints must be different")
-    return (a, b) if a < b else (b, a)
+    return a, b
 
 
 def row_to_node(row: sqlite3.Row) -> dict[str, Any]:
@@ -233,27 +233,142 @@ def get_edge_between(db: sqlite3.Connection, node_a_id: str, node_b_id: str) -> 
     return row_to_edge(row) if row else None
 
 
+def get_edges_between_any_direction(db: sqlite3.Connection, node_a_id: str, node_b_id: str) -> list[dict[str, Any]]:
+    return [
+        row_to_edge(row)
+        for row in db.execute(
+            """
+            SELECT *
+            FROM edges
+            WHERE (node_a_id = ? AND node_b_id = ?)
+               OR (node_a_id = ? AND node_b_id = ?)
+            ORDER BY updated_at DESC
+            """,
+            (node_a_id, node_b_id, node_b_id, node_a_id),
+        ).fetchall()
+    ]
+
+
 def update_edge(db: sqlite3.Connection, edge_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
-    allowed = {"weight", "is_candidate"}
+    edge = get_edge(db, edge_id)
+    if not edge:
+        return None
+    allowed = {"node_a_id", "node_b_id", "weight", "is_candidate"}
     values = {key: value for key, value in changes.items() if key in allowed and value is not None}
     if not values:
-        return get_edge(db, edge_id)
+        return edge
+    next_a = values.get("node_a_id", edge["node_a_id"])
+    next_b = values.get("node_b_id", edge["node_b_id"])
+    if next_a == next_b:
+        raise ValueError("edge endpoints must be different")
+    if ("node_a_id" in values or "node_b_id" in values) and (not get_node(db, next_a) or not get_node(db, next_b)):
+        raise ValueError("edge endpoint node not found")
     values["updated_at"] = utc_now()
     assignments = ",".join(f"{key} = ?" for key in values)
     params = [int(v) if key == "is_candidate" else v for key, v in values.items()]
     params.append(edge_id)
-    db.execute(f"UPDATE edges SET {assignments} WHERE id = ?", params)
+    try:
+        db.execute(f"UPDATE edges SET {assignments} WHERE id = ?", params)
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("edge with same direction already exists") from exc
     return get_edge(db, edge_id)
 
 
-def delete_edge(db: sqlite3.Connection, edge_id: str) -> None:
+def delete_edge(db: sqlite3.Connection, edge_id: str, actor: str = "user") -> None:
     edge = get_edge(db, edge_id)
     db.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
-    append_event(db, "EdgeRemoved", "user", {"edge_id": edge_id, "edge": edge})
+    append_event(db, "EdgeRemoved", actor, {"edge_id": edge_id, "edge": edge})
 
 
 def archive_node(db: sqlite3.Connection, node_id: str, actor: str = "agent") -> dict[str, Any] | None:
     return update_node(db, node_id, {"status": "archived"}, actor=actor)
+
+
+def archive_nodes(db: sqlite3.Connection, node_ids: list[str], actor: str = "user") -> list[dict[str, Any]]:
+    archived = []
+    for node_id in dict.fromkeys(node_ids):
+        node = update_node(db, node_id, {"status": "archived"}, actor=actor)
+        if node:
+            archived.append(node)
+    return archived
+
+
+def insert_node_between(
+    db: sqlite3.Connection,
+    first_node_id: str,
+    second_node_id: str,
+    title: str = "中间节点",
+    body: str = "",
+    actor: str = "user",
+) -> dict[str, Any]:
+    if first_node_id == second_node_id:
+        raise ValueError("two different nodes are required")
+    if not get_node(db, first_node_id) or not get_node(db, second_node_id):
+        raise ValueError("selected node not found")
+    edges = [
+        edge
+        for edge in get_edges_between_any_direction(db, first_node_id, second_node_id)
+        if not edge["is_candidate"]
+    ]
+    if len(edges) != 1:
+        raise ValueError("selected nodes must have exactly one real edge between them")
+    edge = edges[0]
+    node = create_node(db, title=title, body=body, actor=actor)
+    delete_edge(db, edge["id"], actor=actor)
+    first = create_edge(db, edge["node_a_id"], node["id"], weight=edge["weight"], is_candidate=False, created_by=actor)
+    second = create_edge(db, node["id"], edge["node_b_id"], weight=edge["weight"], is_candidate=False, created_by=actor)
+    append_event(
+        db,
+        "NodeInsertedBetween",
+        actor,
+        {"node_id": node["id"], "source_edge": edge, "edge_ids": [first["id"], second["id"]]},
+    )
+    return {"node": node, "edges": [first, second], "removed_edge": edge}
+
+
+def add_cutpoint_for_nodes(
+    db: sqlite3.Connection,
+    node_ids: list[str],
+    title: str = "割点",
+    body: str = "",
+    actor: str = "user",
+) -> dict[str, Any]:
+    selected_ids = [node_id for node_id in dict.fromkeys(node_ids) if get_node(db, node_id)]
+    if not selected_ids:
+        raise ValueError("at least one existing node is required")
+    selected = set(selected_ids)
+    incoming_edges = [
+        edge
+        for edge in list_edges(db)
+        if not edge["is_candidate"] and edge["node_b_id"] in selected and edge["node_a_id"] not in selected
+    ]
+    cutpoint = create_node(db, title=title, body=body, actor=actor)
+    removed_edges = []
+    created_edges: dict[tuple[str, str], dict[str, Any]] = {}
+    for edge in incoming_edges:
+        removed_edges.append(edge)
+        delete_edge(db, edge["id"], actor=actor)
+        for source_id, target_id in ((edge["node_a_id"], cutpoint["id"]), (cutpoint["id"], edge["node_b_id"])):
+            created_edges[(source_id, target_id)] = create_edge(
+                db,
+                source_id,
+                target_id,
+                weight=edge["weight"],
+                is_candidate=False,
+                created_by=actor,
+            )
+    append_event(
+        db,
+        "CutpointAdded",
+        actor,
+        {
+            "cutpoint_node_id": cutpoint["id"],
+            "target_node_ids": selected_ids,
+            "removed_edge_ids": [edge["id"] for edge in removed_edges],
+            "created_edge_ids": [edge["id"] for edge in created_edges.values()],
+        },
+    )
+    return {"node": cutpoint, "removed_edges": removed_edges, "edges": list(created_edges.values())}
 
 
 def neighbors(db: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:

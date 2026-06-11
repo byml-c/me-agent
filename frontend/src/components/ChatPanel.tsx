@@ -1,11 +1,10 @@
 "use client";
 
 import { type KeyboardEvent, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, History, Inbox, Layers3, Lock, MessageCircle, Pencil, RefreshCw, Send, Unlock, Wrench, X } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Check, ChevronLeft, History, Inbox, Layers3, Lock, MessageCircle, Pencil, RefreshCw, Send, Settings, Unlock, Wrench, X } from "lucide-react";
 import { api } from "@/api/client";
 import { NODE_ICON_OPTIONS, type NodeIconKey } from "@/lib/nodeIcons";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { NodeEditorPane, type NodeEditorDraft } from "@/components/NodeEditor";
 import { SharedPanel, type SharedPanelView } from "@/components/SharedPanel";
 import type { ChatMessage, ChatResponse, ChatSession, MeNode, NodeAttachments, NodeDatabaseAttachment, NodeFileAttachment, NodeScriptAttachment, NodeScriptRunResult, Proposal } from "@/types";
@@ -23,7 +22,10 @@ type ToolCallEvent = {
   name: string;
   arguments?: Record<string, unknown>;
   call_id?: string | null;
+  result?: Record<string, unknown>;
 };
+
+const AUTO_ANCHOR_VALUE = "__auto__";
 
 type AgentPanelProps = {
   sessionId?: string;
@@ -40,6 +42,12 @@ type AgentPanelProps = {
   onGraphBuildDone?: () => void;
   onProposalStream?: (proposal: Proposal) => void;
   nodeEditorCommand?: { action: "edit"; nodeId: string; nonce: number } | null;
+  showDirectedEdges?: boolean;
+  onShowDirectedEdgesChange?: (value: boolean) => void;
+  showCutpointGroups?: boolean;
+  onShowCutpointGroupsChange?: (value: boolean) => void;
+  graphEditMode?: boolean;
+  onGraphEditModeChange?: (value: boolean) => void;
 };
 
 const floatingButtonClass = "grid h-9 w-9 place-items-center rounded-full text-slate-500 transition hover:bg-slate-900 hover:text-white";
@@ -63,7 +71,13 @@ export function AgentPanel({
   onGraphBuildStart,
   onGraphBuildDone,
   onProposalStream,
-  nodeEditorCommand
+  nodeEditorCommand,
+  showDirectedEdges = true,
+  onShowDirectedEdgesChange,
+  showCutpointGroups = true,
+  onShowCutpointGroupsChange,
+  graphEditMode = false,
+  onGraphEditModeChange
 }: AgentPanelProps) {
   const [nodes, setNodes] = useState<MeNode[]>([]);
   const [anchorId, setAnchorId] = useState("");
@@ -79,6 +93,7 @@ export function AgentPanel({
   const [panelView, setPanelView] = useState<SharedPanelView>("chat");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeNode, setActiveNode] = useState<MeNode | null>(null);
   const [nodeDraft, setNodeDraft] = useState<NodeEditorDraft | null>(null);
   const [nodeSaving, setNodeSaving] = useState(false);
@@ -108,8 +123,7 @@ export function AgentPanel({
 
   useEffect(() => {
     if (externalAnchorId) {
-      setAnchorId(externalAnchorId);
-      void triggerAnchorScripts(externalAnchorId, "manual_enter");
+      void updateAnchor(externalAnchorId);
     }
   }, [externalAnchorId]);
 
@@ -119,12 +133,6 @@ export function AgentPanel({
     }
     loadActiveNode(anchorId);
   }, [nodeEditorOpen, anchorId]);
-
-  useEffect(() => {
-    if (nodeEditorOpen) {
-      window.setTimeout(() => nodeTitleRef.current?.focus(), 0);
-    }
-  }, [nodeEditorOpen, activeNode?.id]);
 
   useEffect(() => {
     if (!nodeEditorOpen) {
@@ -143,10 +151,12 @@ export function AgentPanel({
     if (!nodeEditorCommand) {
       return;
     }
-    updateAnchor(nodeEditorCommand.nodeId, "manual");
     setChatOpen(true);
     setPanelView("node");
-    loadActiveNode(nodeEditorCommand.nodeId);
+    void (async () => {
+      await updateAnchor(nodeEditorCommand.nodeId, "manual");
+      await loadActiveNode(nodeEditorCommand.nodeId);
+    })();
   }, [nodeEditorCommand?.nonce]);
 
   useEffect(() => {
@@ -168,38 +178,37 @@ export function AgentPanel({
     }
   }
 
-  async function saveNodeDraft() {
-    if (!nodeDraft || !nodeDraft.title.trim()) {
-      return;
+  async function autoSaveNodeDraft(node = activeNode, draft = nodeDraft) {
+    if (!node || !draft || !draft.title.trim() || !shouldAutoSaveNodeDraft(node, draft)) {
+      return null;
     }
     setNodeSaving(true);
     try {
-      const updated = activeNode ? await api.nodes.update(activeNode.id, nodeUpdateFromDraft(activeNode, nodeDraft)) : null;
-      if (!updated) {
-        return;
-      }
-      setActiveNode(updated);
-      setNodeDraft(draftFromNode(updated));
+      const updated = await api.nodes.update(node.id, nodeUpdateFromDraft(node, draft));
+      setActiveNode((current) => current?.id === updated.id ? updated : current);
+      setNodeDraft((current) => current === draft ? draftFromNode(updated) : current);
       setNodes((items) => items.some((node) => node.id === updated.id) ? items.map((node) => (node.id === updated.id ? updated : node)) : [updated, ...items]);
-      updateAnchor(updated.id);
       onNodeChanged?.();
+      return updated;
     } finally {
       setNodeSaving(false);
     }
   }
 
+  function commitNodeDraft(draft: NodeEditorDraft) {
+    void autoSaveNodeDraft(activeNode, draft);
+  }
+
   async function closeNodeEditor() {
-    if (nodeDraft && shouldAutoSaveNodeDraft(activeNode, nodeDraft)) {
-      await saveNodeDraft();
-    }
+    await autoSaveNodeDraft();
     setPanelView("chat");
   }
 
-  function discardNodeDraft() {
-    if (activeNode) {
-      setNodeDraft(draftFromNode(activeNode));
+  async function closeSharedPanel() {
+    if (panelView === "node") {
+      await autoSaveNodeDraft();
     }
-    setPanelView("chat");
+    setChatOpen(false);
   }
 
   async function runNodeScript(script: NodeScriptAttachment) {
@@ -220,20 +229,6 @@ export function AgentPanel({
     setPanelView("node");
   }
 
-  async function importDatabaseAttachment(entryId: string, selectedFile: File | null) {
-    if (!selectedFile) {
-      return;
-    }
-    const content = await selectedFile.text();
-    setNodeDraft((draft) => updateAttachment(draft, "databases", entryId, {
-      kind: "file",
-      name: selectedFile.name,
-      path: selectedFile.name,
-      media_type: selectedFile.type || "text/plain",
-      content
-    }));
-  }
-
   async function chooseSession(id: string) {
     if (!id) {
       setCurrentSessionId(null);
@@ -246,7 +241,7 @@ export function AgentPanel({
     setMessages(messagesFromSession(session));
     const nextAnchor = session.current_anchor_node_ids[0];
     if (nextAnchor && !anchorLocked) {
-      updateAnchor(nextAnchor, "manual", false);
+      void updateAnchor(nextAnchor, "manual", false);
     }
   }
 
@@ -259,7 +254,7 @@ export function AgentPanel({
     refreshSessions();
   }
 
-  async function triggerAnchorScripts(nodeId: string, trigger: "manual_enter" | "ai_switch") {
+  async function triggerAnchorScripts(nodeId: string, trigger: "enter") {
     if (!nodeId || lastTriggeredAnchorRef.current === `${trigger}:${nodeId}`) {
       return;
     }
@@ -280,34 +275,35 @@ export function AgentPanel({
     }
   }
 
-  function updateAnchor(nodeId: string, source: "manual" | "ai" = "manual", triggerScripts = true) {
+  async function updateAnchor(nodeId: string, source: "manual" | "ai" = "manual", triggerScripts = true) {
+    if (nodeEditorOpen && activeNode?.id !== nodeId) {
+      await autoSaveNodeDraft();
+    }
     setAnchorId(nodeId);
     onAnchorChange?.(nodeId);
     if (triggerScripts) {
-      void triggerAnchorScripts(nodeId, source === "ai" ? "ai_switch" : "manual_enter");
+      void triggerAnchorScripts(nodeId, "enter");
     }
   }
 
-  function applyAutoAnchor(result: ChatResponse) {
+  function applyToolAnchor(event: ToolCallEvent) {
     if (anchorLocked) {
+      return;
+    }
+    if (event.name !== "switch_node") {
+      return;
+    }
+    if (event.result && event.result.ok === false) {
       return;
     }
     const nextAnchor =
-      result.graph_intent?.suggested_anchor_node_id ??
-      result.used_context.anchor_nodes[0] ??
-      result.used_context.context_nodes[0]?.id;
+      typeof event.result?.node_id === "string"
+        ? event.result.node_id
+        : typeof event.arguments?.node_id === "string"
+          ? event.arguments.node_id
+          : "";
     if (nextAnchor) {
-      updateAnchor(nextAnchor, "ai");
-    }
-  }
-
-  function applySuggestedAnchor(graphIntent: ChatResponse["graph_intent"]) {
-    if (anchorLocked) {
-      return;
-    }
-    const nextAnchor = graphIntent?.suggested_anchor_node_id;
-    if (nextAnchor) {
-      updateAnchor(nextAnchor, "ai");
+      void updateAnchor(nextAnchor, "ai");
     }
   }
 
@@ -338,10 +334,6 @@ export function AgentPanel({
         anchor_node_ids: anchorId ? [anchorId] : [],
         onMeta: (meta) => {
           setCurrentSessionId(meta.session_id);
-          const nextAnchor = meta.used_context.anchor_nodes[0] ?? meta.used_context.context_nodes[0]?.id;
-          if (nextAnchor && !anchorLocked) {
-            updateAnchor(nextAnchor, "manual", false);
-          }
         },
         onDelta: (delta) => {
           setMessages((items) => {
@@ -366,12 +358,12 @@ export function AgentPanel({
         },
         onGraphIntent: (event) => {
           onGraphIntent?.(event.graph_intent);
-          applySuggestedAnchor(event.graph_intent);
         },
         onGraphBuilding: (event) => {
           onGraphBuildStart?.(event.graph_intent);
         },
         onToolCall: (event) => {
+          applyToolAnchor(event);
           setMessages((items) => {
             const next = [...items];
             const last = next[next.length - 1];
@@ -392,7 +384,6 @@ export function AgentPanel({
       setCurrentSessionId(result.session_id);
       setResponse(result);
       refreshSessions();
-      applyAutoAnchor(result);
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
         onProposalReview?.(result);
@@ -454,12 +445,12 @@ export function AgentPanel({
         },
         onGraphIntent: (event) => {
           onGraphIntent?.(event.graph_intent);
-          applySuggestedAnchor(event.graph_intent);
         },
         onGraphBuilding: (event) => {
           onGraphBuildStart?.(event.graph_intent);
         },
         onToolCall: (event) => {
+          applyToolAnchor(event);
           setMessages((items) => appendToolCallToLastAssistant(items, event));
           scrollMessagesToBottom();
         },
@@ -472,7 +463,6 @@ export function AgentPanel({
       });
       setCurrentSessionId(result.session_id);
       setResponse(result);
-      applyAutoAnchor(result);
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
         onProposalReview?.(result);
@@ -512,12 +502,12 @@ export function AgentPanel({
         },
         onGraphIntent: (event) => {
           onGraphIntent?.(event.graph_intent);
-          applySuggestedAnchor(event.graph_intent);
         },
         onGraphBuilding: (event) => {
           onGraphBuildStart?.(event.graph_intent);
         },
         onToolCall: (event) => {
+          applyToolAnchor(event);
           setMessages((items) => appendToolCallToLastAssistant(items, event));
           scrollMessagesToBottom();
         },
@@ -530,7 +520,6 @@ export function AgentPanel({
       });
       setCurrentSessionId(result.session_id);
       setResponse(result);
-      applyAutoAnchor(result);
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
         onProposalReview?.(result);
@@ -558,15 +547,20 @@ export function AgentPanel({
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_34px_minmax(0,1fr)] items-center gap-2">
       <select
         className="min-w-0 rounded-full border-0 bg-slate-100 px-3 py-2 text-sm text-slate-800 outline-none"
-        value={anchorLocked && anchorId ? anchorId : "__auto__"}
+        value={anchorLocked && anchorId ? anchorId : AUTO_ANCHOR_VALUE}
         onChange={(event) => {
           const nextAnchor = event.target.value;
-          if (nextAnchor !== "__auto__") {
-            updateAnchor(nextAnchor);
+          if (nextAnchor === AUTO_ANCHOR_VALUE) {
+            onAnchorLockChange?.(false);
+            return;
+          }
+          onAnchorLockChange?.(true);
+          if (nextAnchor) {
+            void updateAnchor(nextAnchor);
           }
         }}
       >
-        <option value="__auto__">{`Auto - ${currentAnchorTitle}`}</option>
+        <option value={AUTO_ANCHOR_VALUE}>{`Auto - ${currentAnchorTitle}`}</option>
         {nodes.map((node) => (
           <option key={node.id} value={node.id}>
             {node.title}
@@ -621,6 +615,20 @@ export function AgentPanel({
           >
             <Layers3 size={18} />
           </button>
+          <button
+            className={`${floatingButtonClass} ${graphEditMode ? floatingButtonActiveClass : ""}`}
+            title={graphEditMode ? "退出编辑" : "编辑"}
+            onClick={() => onGraphEditModeChange?.(!graphEditMode)}
+          >
+            <Pencil size={18} />
+          </button>
+          <button
+            className={`${floatingButtonClass} ${settingsOpen ? floatingButtonActiveClass : ""}`}
+            title="设置"
+            onClick={() => setSettingsOpen((value) => !value)}
+          >
+            <Settings size={18} />
+          </button>
         </div>
       </div>
 
@@ -665,23 +673,46 @@ export function AgentPanel({
         </aside>
       ) : null}
 
+      {settingsOpen ? (
+        <aside className={`${panelClass} pointer-events-auto right-4 top-[78px] grid w-[min(340px,calc(100vw-32px))] gap-3 p-3`}>
+          <PanelHead title="设置" onClose={() => setSettingsOpen(false)} />
+          <label className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            <span className="font-semibold text-slate-900">显示有向边</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900/20"
+              checked={showDirectedEdges}
+              onChange={(event) => onShowDirectedEdgesChange?.(event.target.checked)}
+            />
+          </label>
+          <label className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            <span className="font-semibold text-slate-900">显示割点分组</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900/20"
+              checked={showCutpointGroups}
+              onChange={(event) => onShowCutpointGroupsChange?.(event.target.checked)}
+            />
+          </label>
+        </aside>
+      ) : null}
+
       <SharedPanel
         open={chatOpen}
         view={panelView}
         headerControls={panelHeaderControls}
-        onClose={() => setChatOpen(false)}
+        onClose={closeSharedPanel}
         onViewChange={(view) => {
           if (view === "node") {
             openNodeEditor();
             return;
           }
-          setPanelView("chat");
+          void closeNodeEditor();
         }}
       >
           {panelView === "node" ? (
             <NodeEditorPane
               activeNode={activeNode}
-              anchorId={anchorId}
               draft={nodeDraft}
               filteredNodeIconOptions={filteredNodeIconOptions}
               iconPickerOpen={nodeIconPickerOpen}
@@ -690,30 +721,11 @@ export function AgentPanel({
               nodeSaving={nodeSaving}
               nodeTitleRef={nodeTitleRef}
               scriptResults={scriptResults}
-              onAddDatabase={() => setNodeDraft((draft) => draft ? {
-                ...draft,
-                attachments: {
-                  ...draft.attachments,
-                  databases: [...draft.attachments.databases, { id: newAttachmentId("entry"), kind: "text", name: "知识条目", content: "", summary: "" }]
-                }
-              } : draft)}
-              onAddScript={() => setNodeDraft((draft) => draft ? {
-                ...draft,
-                attachments: {
-                  ...draft.attachments,
-                  scripts: [...draft.attachments.scripts, { id: newAttachmentId("script"), name: "Python 脚本", language: "python", code: "print('hello from node')", description: "", trigger_on_enter: false, trigger_on_ai_switch: false }]
-                }
-              } : draft)}
-              onClose={closeNodeEditor}
-              onDiscard={discardNodeDraft}
               onDraftChange={setNodeDraft}
+              onDraftCommit={commitNodeDraft}
               onIconPickerOpenChange={setNodeIconPickerOpen}
               onIconSearchChange={setNodeIconSearch}
-              onImportDatabaseAttachment={importDatabaseAttachment}
-              onRemoveAttachment={(key, id) => setNodeDraft((draft) => removeAttachment(draft, key, id))}
               onRunScript={runNodeScript}
-              onSave={saveNodeDraft}
-              onUpdateAttachment={(key, id, changes) => setNodeDraft((draft) => updateAttachment(draft, key, id, changes))}
             />
           ) : (
             <ChatPanel
@@ -806,6 +818,15 @@ function appendToolCallToLastAssistant(items: Message[], event: ToolCallEvent): 
   return next;
 }
 
+function toolCallLabel(toolCall: ToolCallEvent) {
+  if (toolCall.name === "switch_node") {
+    const node = toolCall.result?.node;
+    const title = typeof node === "object" && node && "title" in node && typeof node.title === "string" ? node.title : "";
+    return title ? `切换到 ${title}` : "切换对话节点";
+  }
+  return `调用了 ${toolCall.name} 函数`;
+}
+
 type ChatPanelViewProps = {
   editingContent: string;
   editingMessageId: string | null;
@@ -840,12 +861,12 @@ export function ChatPanel({
   onStartEditMessage
 }: ChatPanelViewProps) {
   return (
-    <>
-      <div ref={messagesRef} className="grid min-h-0 gap-3 overflow-auto p-4">
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto]">
+      <div ref={messagesRef} className="grid min-h-0 content-start auto-rows-max gap-3 overflow-auto p-4">
         {messages.map((item, index) => (
           <div
             key={`${item.role}-${index}`}
-            className={`group relative max-w-[92%] rounded-[18px] px-4 py-3 text-[14px] leading-[1.58] ${item.role === "user" ? "justify-self-end rounded-tr-[8px] bg-slate-900 text-white" : "justify-self-start rounded-tl-[8px] bg-slate-100 text-slate-900"}`}
+            className={`group relative h-fit w-fit max-w-[92%] rounded-[18px] px-4 py-3 text-[14px] leading-[1.58] ${item.role === "user" ? "justify-self-end rounded-tr-[8px] bg-slate-900 text-white" : "justify-self-start rounded-tl-[8px] bg-slate-100 text-slate-900"}`}
           >
             {editingMessageId && editingMessageId === item.id ? (
               <div className="grid gap-2">
@@ -879,7 +900,7 @@ export function ChatPanel({
                     {item.toolCalls.map((toolCall, callIndex) => (
                       <div key={`${toolCall.call_id ?? toolCall.name}-${callIndex}`} className="inline-flex w-fit max-w-full items-center gap-1.5 text-xs leading-5 text-slate-500 break-words">
                         <Wrench size={12} />
-                        调用了 {toolCall.name} 函数
+                        {toolCallLabel(toolCall)}
                       </div>
                     ))}
                   </div>
@@ -912,6 +933,7 @@ export function ChatPanel({
       <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 border-t border-slate-200 p-3">
         <textarea
           className="min-h-[54px] max-h-[170px] resize-y rounded-[24px] border-0 bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-900 outline-none focus:ring-1 focus:ring-slate-900/10"
+          style={{ resize: "none" }}
           placeholder="输入消息，Agent 会读取锚点附近的局部图上下文"
           value={message}
           onChange={(event) => onMessageChange(event.target.value)}
@@ -928,44 +950,12 @@ export function ChatPanel({
           <span className="sr-only">发送</span>
         </button>
       </div>
-    </>
+    </div>
   );
 }
 
 function MessageMarkdown({ content }: { content: string }) {
-  return (
-    <div className="min-w-0 whitespace-normal break-words">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-          ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
-          ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
-          li: ({ children }) => <li>{children}</li>,
-          a: ({ children, href }) => (
-            <a className="underline underline-offset-2" href={href} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-          blockquote: ({ children }) => <blockquote className="mb-2 border-l-4 border-slate-300 pl-3 text-slate-500 last:mb-0">{children}</blockquote>,
-          code: (({ children, className }: any) => {
-            const inline = !className?.includes("language-");
-            return inline ? (
-              <code className="rounded-md bg-black/5 px-1.5 py-0.5 font-mono text-[0.92em]">{children}</code>
-            ) : (
-              <code className="block rounded-xl bg-slate-900 px-3 py-2 font-mono text-[0.92em] text-emerald-50">{children}</code>
-            );
-          }) as any,
-          pre: ({ children }) => <pre className="mb-2 overflow-auto rounded-xl bg-slate-900 p-3 last:mb-0">{children}</pre>,
-          table: ({ children }) => <table className="mb-2 block max-w-full overflow-auto border-collapse last:mb-0">{children}</table>,
-          th: ({ children }) => <th className="border border-slate-200 px-2 py-1 text-left">{children}</th>,
-          td: ({ children }) => <td className="border border-slate-200 px-2 py-1 text-left">{children}</td>
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
+  return <MarkdownContent content={content} className="text-[14px]" />;
 }
 
 function draftFromNode(node: MeNode): NodeEditorDraft {
@@ -1042,10 +1032,30 @@ function normalizeNodeAttachments(memory: MeNode["memory"]): NodeAttachments {
       code: item.code || "",
       description: item.description || "",
       trigger_on_enter: Boolean(item.trigger_on_enter),
-      trigger_on_ai_switch: Boolean(item.trigger_on_ai_switch)
+      trigger_on_ai_switch: Boolean(item.trigger_on_ai_switch),
+      schedule_rules: normalizeScheduleRules(item.schedule_rules)
     })),
     files: []
   };
+}
+
+function normalizeScheduleRules(value: unknown): NodeScriptAttachment["schedule_rules"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .map((item) => {
+      const kind = item.kind === "weekly" ? "weekly" : "daily";
+      const time = typeof item.time === "string" && /^\d{2}:\d{2}$/.test(item.time) ? item.time : "09:00";
+      const weekday = typeof item.weekday === "number" && item.weekday >= 0 && item.weekday <= 6 ? item.weekday : 1;
+      return {
+        id: String(item.id || newAttachmentId("schedule")),
+        kind,
+        time,
+        ...(kind === "weekly" ? { weekday } : {})
+      };
+    });
 }
 
 function normalizeAttachmentList<T extends { id: string; name: string }>(value: unknown): T[] {
@@ -1055,37 +1065,6 @@ function normalizeAttachmentList<T extends { id: string; name: string }>(value: 
   return value
     .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
     .map((item) => ({ ...item, id: String(item.id || newAttachmentId("attachment")), name: String(item.name || "") } as T));
-}
-
-function updateAttachment<T extends keyof NodeAttachments>(
-  draft: NodeEditorDraft | null,
-  key: T,
-  id: string,
-  changes: Partial<NodeAttachments[T][number]>
-): NodeEditorDraft | null {
-  if (!draft) {
-    return draft;
-  }
-  return {
-    ...draft,
-    attachments: {
-      ...draft.attachments,
-      [key]: draft.attachments[key].map((item) => (item.id === id ? { ...item, ...changes } : item)) as NodeAttachments[T]
-    }
-  };
-}
-
-function removeAttachment<T extends keyof NodeAttachments>(draft: NodeEditorDraft | null, key: T, id: string): NodeEditorDraft | null {
-  if (!draft) {
-    return draft;
-  }
-  return {
-    ...draft,
-    attachments: {
-      ...draft.attachments,
-      [key]: draft.attachments[key].filter((item) => item.id !== id) as NodeAttachments[T]
-    }
-  };
 }
 
 function newAttachmentId(prefix: string): string {

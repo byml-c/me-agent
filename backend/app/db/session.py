@@ -81,8 +81,7 @@ def init_db() -> None:
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               last_accessed_at TEXT,
-              UNIQUE(node_a_id, node_b_id),
-              CHECK(node_a_id < node_b_id)
+              UNIQUE(node_a_id, node_b_id)
             );
 
             CREATE TABLE IF NOT EXISTS events (
@@ -162,9 +161,43 @@ def init_db() -> None:
             """
         )
         ensure_chat_message_columns(db)
+        ensure_directed_edges_schema(db)
         ensure_library_file_columns(db)
         ensure_library_entry_columns(db)
         ensure_library_vector_table(db)
+
+
+def ensure_directed_edges_schema(db: sqlite3.Connection) -> None:
+    table = db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'").fetchone()
+    if not table or "CHECK(node_a_id < node_b_id)" not in (table["sql"] or ""):
+        return
+    db.executescript(
+        """
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE edges_directed_migration (
+          id TEXT PRIMARY KEY,
+          node_a_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+          node_b_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+          weight REAL NOT NULL DEFAULT 1.0,
+          access_count INTEGER NOT NULL DEFAULT 0,
+          coactivation_count INTEGER NOT NULL DEFAULT 0,
+          is_candidate INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL DEFAULT 'user',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_accessed_at TEXT,
+          UNIQUE(node_a_id, node_b_id)
+        );
+        INSERT INTO edges_directed_migration
+          (id,node_a_id,node_b_id,weight,access_count,coactivation_count,is_candidate,created_by,created_at,updated_at,last_accessed_at)
+        SELECT
+          id,node_a_id,node_b_id,weight,access_count,coactivation_count,is_candidate,created_by,created_at,updated_at,last_accessed_at
+        FROM edges;
+        DROP TABLE edges;
+        ALTER TABLE edges_directed_migration RENAME TO edges;
+        PRAGMA foreign_keys = ON;
+        """
+    )
 
 
 def ensure_chat_message_columns(db: sqlite3.Connection) -> None:

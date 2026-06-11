@@ -29,12 +29,24 @@ export const api = {
     update: (id: string, payload: Partial<Pick<MeNode, "title" | "body" | "summary" | "memory" | "is_workspace" | "status">>) =>
       request<MeNode>(`/nodes/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
     get: (id: string) => request<MeNode>(`/nodes/${id}`),
+    archiveBatch: (nodeIds: string[]) =>
+      request<{ nodes: MeNode[] }>("/nodes/batch/archive", { method: "POST", body: JSON.stringify({ node_ids: nodeIds }) }),
+    insertBetween: (nodeIds: [string, string], title = "中间节点") =>
+      request<{ node: MeNode; edges: MeEdge[]; removed_edge: MeEdge }>("/nodes/graph-actions/insert-between", {
+        method: "POST",
+        body: JSON.stringify({ node_ids: nodeIds, title })
+      }),
+    addCutpoint: (nodeIds: string[], title = "割点") =>
+      request<{ node: MeNode; edges: MeEdge[]; removed_edges: MeEdge[] }>("/nodes/graph-actions/add-cutpoint", {
+        method: "POST",
+        body: JSON.stringify({ node_ids: nodeIds, title })
+      }),
     runScript: (nodeId: string, scriptId: string, args: Record<string, unknown> = {}, code?: string) =>
       request<NodeScriptRunResult>(`/nodes/${nodeId}/scripts/${scriptId}/run`, {
         method: "POST",
         body: JSON.stringify({ node_id: nodeId, args, code, trigger: "manual_run" })
       }),
-    triggerScripts: (nodeId: string, trigger: "manual_enter" | "ai_switch", args: Record<string, unknown> = {}) =>
+    triggerScripts: (nodeId: string, trigger: "enter" | "schedule", args: Record<string, unknown> = {}) =>
       request<{ node_id: string; trigger: string; results: NodeScriptRunResult[] }>(`/nodes/${nodeId}/scripts/trigger`, {
         method: "POST",
         body: JSON.stringify({ trigger, args })
@@ -58,7 +70,7 @@ export const api = {
   edges: {
     create: (payload: { node_a_id: string; node_b_id: string; weight?: number; is_candidate?: boolean }) =>
       request<MeEdge>("/edges", { method: "POST", body: JSON.stringify(payload) }),
-    update: (id: string, payload: Partial<Pick<MeEdge, "weight" | "is_candidate">>) =>
+    update: (id: string, payload: Partial<Pick<MeEdge, "node_a_id" | "node_b_id" | "weight" | "is_candidate">>) =>
       request<MeEdge>(`/edges/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
     delete: (id: string) => request<void>(`/edges/${id}`, { method: "DELETE" })
   },

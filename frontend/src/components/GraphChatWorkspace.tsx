@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { api } from "@/api/client";
 import { GraphPanel } from "@/components/GraphPanel";
 import { AgentPanel } from "@/components/ChatPanel";
 import type { ChatResponse, MeNode, Proposal } from "@/types";
+
+const GRAPH_SETTINGS_STORAGE_KEY = "me-agent:graph-settings";
 
 export function GraphChatWorkspace() {
   const [anchorId, setAnchorId] = useState<string | undefined>();
@@ -15,6 +17,45 @@ export function GraphChatWorkspace() {
   const [graphIntent, setGraphIntent] = useState<ChatResponse["graph_intent"]>();
   const [graphBuilding, setGraphBuilding] = useState(false);
   const [nodeEditorCommand, setNodeEditorCommand] = useState<{ action: "edit"; nodeId: string; nonce: number } | null>(null);
+  const [showDirectedEdges, setShowDirectedEdges] = useState(true);
+  const [showCutpointGroups, setShowCutpointGroups] = useState(true);
+  const [graphEditMode, setGraphEditMode] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(GRAPH_SETTINGS_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const settings = JSON.parse(raw) as { showDirectedEdges?: boolean; showCutpointGroups?: boolean };
+      if (typeof settings.showDirectedEdges === "boolean") {
+        setShowDirectedEdges(settings.showDirectedEdges);
+      }
+      if (typeof settings.showCutpointGroups === "boolean") {
+        setShowCutpointGroups(settings.showCutpointGroups);
+      }
+    } catch {
+      // Ignore invalid local settings.
+    }
+  }, []);
+
+  function updateShowDirectedEdges(value: boolean) {
+    setShowDirectedEdges(value);
+    saveGraphSettings({ showDirectedEdges: value, showCutpointGroups });
+  }
+
+  function updateShowCutpointGroups(value: boolean) {
+    setShowCutpointGroups(value);
+    saveGraphSettings({ showDirectedEdges, showCutpointGroups: value });
+  }
+
+  function saveGraphSettings(settings: { showDirectedEdges: boolean; showCutpointGroups: boolean }) {
+    try {
+      window.localStorage.setItem(GRAPH_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch {
+      // Ignore storage failures; the setting still applies for this session.
+    }
+  }
 
   function handleProposals(response: ChatResponse) {
     const pending = response.proposals.filter((proposal) => proposal.status === "pending");
@@ -78,19 +119,20 @@ export function GraphChatWorkspace() {
   const pendingCount = reviewProposals.filter((proposal) => proposal.status === "pending").length;
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-white">
+    <div className="relative h-dvh w-dvw overflow-hidden bg-white">
       <section className="absolute inset-0" aria-label="Local graph">
         <GraphPanel
           anchorId={anchorId}
           onSelectNode={(node) => {
-            if (!anchorLocked) {
-              setAnchorId(node.id);
-            }
+            setAnchorId(node.id);
           }}
           compact
           refreshKey={graphRefresh}
           reviewProposals={reviewProposals}
           onCreateNode={openCreatedNode}
+          showDirectedEdges={showDirectedEdges}
+          showCutpointGroups={showCutpointGroups}
+          editMode={graphEditMode}
         />
       </section>
       {graphBuilding || currentProposal ? (
@@ -156,6 +198,12 @@ export function GraphChatWorkspace() {
         onGraphBuildDone={() => setGraphBuilding(false)}
         onProposalStream={handleProposalStream}
         nodeEditorCommand={nodeEditorCommand}
+        showDirectedEdges={showDirectedEdges}
+        onShowDirectedEdgesChange={updateShowDirectedEdges}
+        showCutpointGroups={showCutpointGroups}
+        onShowCutpointGroupsChange={updateShowCutpointGroups}
+        graphEditMode={graphEditMode}
+        onGraphEditModeChange={setGraphEditMode}
       />
     </div>
   );
