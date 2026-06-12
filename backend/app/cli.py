@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend.app.db.session import get_db, init_db
 from backend.app.main import seed_if_empty
-from backend.app.services import agent_runtime, graph_store, graph_writer
+from backend.app.services import agent_runtime, file_library, graph_store, graph_writer, node_runtime
 
 
 CommandHandler = Callable[[argparse.Namespace], Any]
@@ -26,15 +31,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed_if_empty()
     result = args.handler(args)
     if result is not None:
-        emit(result, as_json=args.json)
+        emit(result)
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="me-agent", description="Me.Agent backend CLI")
-    parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
     parser.add_argument("--no-seed", action="store_true", help="do not seed the database before running")
-    parser.add_argument("--api-url", help="connect to a running Me.Agent HTTP backend instead of local SQLite")
+    parser.add_argument(
+        "--api-url",
+        default=default_api_url(),
+        help=(
+            "connect to a running Me.Agent HTTP backend instead of local SQLite "
+            "(default: ME_AGENT_API_URL or SERVER_URL)"
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     chat_parser = subparsers.add_parser("chat", help="send one message or start an interactive chat")
@@ -56,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
     node_list = node_sub.add_parser("list", help="list nodes")
     node_list.add_argument("--include-archived", action="store_true")
     node_list.set_defaults(handler=handle_nodes_list)
+    node_search = node_sub.add_parser("search", help="search nodes by text and attachments")
+    node_search.add_argument("query")
+    node_search.add_argument("--workspace-id")
+    node_search.add_argument("--anchor")
+    node_search.add_argument("--depth", type=int, default=2)
+    node_search.add_argument("--limit", type=int, default=20)
+    node_search.add_argument("--include-archived", action="store_true")
+    node_search.add_argument("--with-database", help="only include nodes with a matching database attachment")
+    node_search.set_defaults(handler=handle_nodes_search)
     node_create = node_sub.add_parser("create", help="create a node")
     add_node_create_options(node_create)
     node_create.set_defaults(handler=handle_nodes_create)
@@ -81,6 +101,93 @@ def build_parser() -> argparse.ArgumentParser:
     node_ego.add_argument("--depth", type=int, default=2)
     node_ego.add_argument("--limit", type=int, default=50)
     node_ego.set_defaults(handler=handle_nodes_ego_graph)
+
+    node_memory = node_sub.add_parser("memory", help="inspect or replace node memory")
+    node_memory_sub = node_memory.add_subparsers(dest="memory_action", required=True)
+    node_memory_show = node_memory_sub.add_parser("show", help="show node memory")
+    node_memory_show.add_argument("node_id")
+    node_memory_show.set_defaults(handler=handle_nodes_memory_show)
+    node_memory_update = node_memory_sub.add_parser("update", help="replace node memory from JSON")
+    node_memory_update.add_argument("node_id")
+    add_json_input_options(node_memory_update)
+    node_memory_update.set_defaults(handler=handle_nodes_memory_update)
+
+    node_databases = node_sub.add_parser("databases", help="manage node database attachments")
+    node_databases_sub = node_databases.add_subparsers(dest="database_action", required=True)
+    node_databases_list = node_databases_sub.add_parser("list", help="list node database attachments")
+    node_databases_list.add_argument("node_id")
+    node_databases_list.set_defaults(handler=handle_nodes_databases_list)
+    node_databases_add = node_databases_sub.add_parser("add", help="add a database attachment to a node")
+    node_databases_add.add_argument("node_id")
+    node_databases_add.add_argument("--name", required=True)
+    node_databases_add.add_argument("--description")
+    node_databases_add.add_argument("--content")
+    node_databases_add.add_argument("--content-file")
+    node_databases_add.add_argument("--path")
+    node_databases_add.add_argument("--media-type")
+    node_databases_add.add_argument("--kind", choices=["text", "file"], default="text")
+    node_databases_add.add_argument("--entry-id")
+    node_databases_add.add_argument("--file-id")
+    node_databases_add.set_defaults(handler=handle_nodes_databases_add)
+    node_databases_update = node_databases_sub.add_parser("update", help="update a node database attachment")
+    node_databases_update.add_argument("node_id")
+    node_databases_update.add_argument("database_id")
+    node_databases_update.add_argument("--name")
+    node_databases_update.add_argument("--description")
+    node_databases_update.add_argument("--content")
+    node_databases_update.add_argument("--content-file")
+    node_databases_update.add_argument("--path")
+    node_databases_update.add_argument("--media-type")
+    node_databases_update.set_defaults(handler=handle_nodes_databases_update)
+    node_databases_delete = node_databases_sub.add_parser("delete", help="remove a node database attachment")
+    node_databases_delete.add_argument("node_id")
+    node_databases_delete.add_argument("database_id")
+    node_databases_delete.set_defaults(handler=handle_nodes_databases_delete)
+
+    node_files = node_sub.add_parser("files", help="manage node file attachments")
+    node_files_sub = node_files.add_subparsers(dest="file_action", required=True)
+    node_files_list = node_files_sub.add_parser("list", help="list node file attachments")
+    node_files_list.add_argument("node_id")
+    node_files_list.set_defaults(handler=handle_nodes_files_list)
+    node_files_add = node_files_sub.add_parser("add", help="add a file attachment to a node")
+    node_files_add.add_argument("node_id")
+    node_files_add.add_argument("--name", required=True)
+    node_files_add.add_argument("--description")
+    node_files_add.add_argument("--content")
+    node_files_add.add_argument("--content-file")
+    node_files_add.add_argument("--path")
+    node_files_add.add_argument("--media-type")
+    node_files_add.add_argument("--file-id")
+    node_files_add.set_defaults(handler=handle_nodes_files_add)
+    node_files_delete = node_files_sub.add_parser("delete", help="remove a node file attachment")
+    node_files_delete.add_argument("node_id")
+    node_files_delete.add_argument("file_attachment_id")
+    node_files_delete.set_defaults(handler=handle_nodes_files_delete)
+
+    node_scripts = node_sub.add_parser("scripts", help="manage node script attachments")
+    node_scripts_sub = node_scripts.add_subparsers(dest="script_action", required=True)
+    node_scripts_list = node_scripts_sub.add_parser("list", help="list node scripts")
+    node_scripts_list.add_argument("node_id")
+    node_scripts_list.set_defaults(handler=handle_nodes_scripts_list)
+    node_scripts_add = node_scripts_sub.add_parser("add", help="add a Python script to a node")
+    node_scripts_add.add_argument("node_id")
+    add_script_mutation_options(node_scripts_add, require_code=True)
+    node_scripts_add.set_defaults(handler=handle_nodes_scripts_add)
+    node_scripts_update = node_scripts_sub.add_parser("update", help="update a node script")
+    node_scripts_update.add_argument("node_id")
+    node_scripts_update.add_argument("script_id")
+    add_script_mutation_options(node_scripts_update, require_code=False)
+    node_scripts_update.set_defaults(handler=handle_nodes_scripts_update)
+    node_scripts_delete = node_scripts_sub.add_parser("delete", help="remove a node script")
+    node_scripts_delete.add_argument("node_id")
+    node_scripts_delete.add_argument("script_id")
+    node_scripts_delete.set_defaults(handler=handle_nodes_scripts_delete)
+    node_scripts_run = node_scripts_sub.add_parser("run", help="run a node script")
+    node_scripts_run.add_argument("node_id")
+    node_scripts_run.add_argument("script_id")
+    node_scripts_run.add_argument("--arg", action="append", default=[], help="key=value argument")
+    node_scripts_run.add_argument("--trigger", default="manual_run")
+    node_scripts_run.set_defaults(handler=handle_nodes_scripts_run)
 
     workspace_parser = subparsers.add_parser("workspaces", help="manage workspaces")
     workspace_sub = workspace_parser.add_subparsers(dest="action", required=True)
@@ -143,6 +250,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def default_api_url() -> str | None:
+    for name in ("ME_AGENT_API_URL", "SERVER_URL"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
+
+
 def add_chat_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session-id")
     parser.add_argument("--anchor", dest="anchor_node_ids", action="append", default=[])
@@ -155,6 +270,24 @@ def add_node_create_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--title", required=True)
     parser.add_argument("--body", default="")
     parser.add_argument("--summary")
+
+
+def add_json_input_options(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--memory", dest="json_text", help="memory JSON object text")
+    group.add_argument("--file", dest="json_file", help="path to a JSON file")
+
+
+def add_script_mutation_options(parser: argparse.ArgumentParser, *, require_code: bool) -> None:
+    parser.add_argument("--name", required=require_code)
+    parser.add_argument("--description")
+    code_group = parser.add_mutually_exclusive_group(required=require_code)
+    code_group.add_argument("--code")
+    code_group.add_argument("--code-file")
+    parser.add_argument("--trigger-on-enter", action="store_true")
+    parser.add_argument("--no-trigger-on-enter", action="store_true")
+    parser.add_argument("--trigger-on-ai-switch", action="store_true")
+    parser.add_argument("--no-trigger-on-ai-switch", action="store_true")
 
 
 def handle_chat(args: argparse.Namespace) -> Any:
@@ -180,10 +313,7 @@ def interactive_chat(args: argparse.Namespace) -> None:
         args.session_id = session_id
         result = run_chat(args, message)
         session_id = result["session_id"]
-        if args.json:
-            emit(result, as_json=True)
-        else:
-            print(result["assistant_message"])
+        print(result["assistant_message"])
 
 
 def run_chat(args: argparse.Namespace, message: str) -> dict[str, Any]:
@@ -301,6 +431,171 @@ def handle_nodes_ego_graph(args: argparse.Namespace) -> Any:
         return graph_store.ego_graph(db, args.node_id, depth=args.depth, limit=args.limit)
 
 
+def handle_nodes_search(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        nodes = http_request(args, "GET", nodes_list_path(include_archived=args.include_archived))
+        edges = http_request(args, "GET", "/edges")
+    else:
+        with get_db() as db:
+            nodes = graph_store.list_nodes(db, include_archived=args.include_archived)
+            edges = graph_store.list_edges(db)
+    return search_nodes(
+        nodes,
+        edges,
+        query=args.query,
+        workspace_id=args.workspace_id,
+        anchor_id=args.anchor,
+        depth=args.depth,
+        limit=args.limit,
+        database_query=args.with_database,
+    )
+
+
+def handle_nodes_memory_show(args: argparse.Namespace) -> Any:
+    node = load_node(args, args.node_id)
+    return node.get("memory") or {}
+
+
+def handle_nodes_memory_update(args: argparse.Namespace) -> Any:
+    memory = parse_json_object(read_json_input(args))
+    return save_node_memory(args, args.node_id, memory, event_type="NodeMemoryUpdated")
+
+
+def handle_nodes_databases_list(args: argparse.Namespace) -> Any:
+    return node_attachments(load_node(args, args.node_id)).get("databases", [])
+
+
+def handle_nodes_databases_add(args: argparse.Namespace) -> Any:
+    attachment = {
+        "id": graph_store.new_id("dbatt"),
+        "entry_id": args.entry_id,
+        "file_id": args.file_id,
+        "kind": args.kind,
+        "name": args.name,
+        "description": args.description,
+        "content": read_optional_text(args.content, args.content_file),
+        "path": args.path,
+        "media_type": args.media_type,
+    }
+    return mutate_attachment_list(args, args.node_id, "databases", lambda items: [*items, compact_dict(attachment)])
+
+
+def handle_nodes_databases_update(args: argparse.Namespace) -> Any:
+    changes = compact_dict(
+        {
+            "name": args.name,
+            "description": args.description,
+            "content": read_optional_text(args.content, args.content_file),
+            "path": args.path,
+            "media_type": args.media_type,
+        }
+    )
+    return mutate_attachment_list(
+        args,
+        args.node_id,
+        "databases",
+        lambda items: update_attachment(items, args.database_id, changes, "database attachment"),
+    )
+
+
+def handle_nodes_databases_delete(args: argparse.Namespace) -> Any:
+    return mutate_attachment_list(
+        args,
+        args.node_id,
+        "databases",
+        lambda items: delete_attachment(items, args.database_id, "database attachment"),
+    )
+
+
+def handle_nodes_files_list(args: argparse.Namespace) -> Any:
+    return node_attachments(load_node(args, args.node_id)).get("files", [])
+
+
+def handle_nodes_files_add(args: argparse.Namespace) -> Any:
+    attachment = {
+        "id": graph_store.new_id("fileatt"),
+        "file_id": args.file_id,
+        "name": args.name,
+        "description": args.description,
+        "content": read_optional_text(args.content, args.content_file),
+        "path": args.path,
+        "media_type": args.media_type,
+    }
+    return mutate_attachment_list(args, args.node_id, "files", lambda items: [*items, compact_dict(attachment)])
+
+
+def handle_nodes_files_delete(args: argparse.Namespace) -> Any:
+    return mutate_attachment_list(
+        args,
+        args.node_id,
+        "files",
+        lambda items: delete_attachment(items, args.file_attachment_id, "file attachment"),
+    )
+
+
+def handle_nodes_scripts_list(args: argparse.Namespace) -> Any:
+    return node_attachments(load_node(args, args.node_id)).get("scripts", [])
+
+
+def handle_nodes_scripts_add(args: argparse.Namespace) -> Any:
+    script = compact_dict(
+        {
+            "id": graph_store.new_id("script"),
+            "name": args.name,
+            "language": "python",
+            "code": read_optional_text(args.code, args.code_file) or "",
+            "description": args.description,
+            "trigger_on_enter": bool(args.trigger_on_enter),
+            "trigger_on_ai_switch": bool(args.trigger_on_ai_switch),
+            "schedule_rules": [],
+        }
+    )
+    return mutate_attachment_list(args, args.node_id, "scripts", lambda items: [*items, script])
+
+
+def handle_nodes_scripts_update(args: argparse.Namespace) -> Any:
+    changes = compact_dict(
+        {
+            "name": args.name,
+            "description": args.description,
+            "code": read_optional_text(args.code, args.code_file),
+        }
+    )
+    if args.trigger_on_enter or args.no_trigger_on_enter:
+        changes["trigger_on_enter"] = bool(args.trigger_on_enter)
+    if args.trigger_on_ai_switch or args.no_trigger_on_ai_switch:
+        changes["trigger_on_ai_switch"] = bool(args.trigger_on_ai_switch)
+    return mutate_attachment_list(
+        args,
+        args.node_id,
+        "scripts",
+        lambda items: update_attachment(items, args.script_id, changes, "script"),
+    )
+
+
+def handle_nodes_scripts_delete(args: argparse.Namespace) -> Any:
+    return mutate_attachment_list(
+        args,
+        args.node_id,
+        "scripts",
+        lambda items: delete_attachment(items, args.script_id, "script"),
+    )
+
+
+def handle_nodes_scripts_run(args: argparse.Namespace) -> Any:
+    payload = {"args": parse_key_values(args.arg), "trigger": args.trigger}
+    if args.api_url:
+        return http_request(args, "POST", f"/nodes/{quote_path(args.node_id)}/scripts/{quote_path(args.script_id)}/run", payload)
+    with get_db() as db:
+        node = require_node(db, args.node_id)
+        script = node_runtime.find_script(node, args.script_id)
+        if not script:
+            raise SystemExit(f"script not found: {args.script_id}")
+        result = node_runtime.run_python_script(node, script, args=payload["args"], trigger=args.trigger)
+        graph_store.append_event(db, "NodeScriptExecuted", "agent", result)
+        return result
+
+
 def handle_workspaces_list(args: argparse.Namespace) -> Any:
     if args.api_url:
         return http_request(args, "GET", "/workspaces")
@@ -321,6 +616,8 @@ def handle_workspaces_create(args: argparse.Namespace) -> Any:
 
 
 def handle_workspaces_show(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/workspaces/{quote_path(args.node_id)}")
     with get_db() as db:
         node = require_node(db, args.node_id)
         if not node["is_workspace"]:
@@ -397,6 +694,8 @@ def handle_proposals_list(args: argparse.Namespace) -> Any:
 
 
 def handle_proposals_show(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/proposals/{quote_path(args.proposal_id)}")
     with get_db() as db:
         proposal = graph_store.get_proposal(db, args.proposal_id)
         if not proposal:
@@ -450,6 +749,223 @@ def handle_scripts_run(args: argparse.Namespace) -> Any:
     return result
 
 
+def load_node(args: argparse.Namespace, node_id: str) -> dict[str, Any]:
+    if args.api_url:
+        return http_request(args, "GET", f"/nodes/{quote_path(node_id)}")
+    with get_db() as db:
+        return require_node(db, node_id)
+
+
+def save_node_memory(
+    args: argparse.Namespace,
+    node_id: str,
+    memory: dict[str, Any],
+    *,
+    event_type: str = "NodeMemoryEditedByAgent",
+) -> dict[str, Any]:
+    if args.api_url:
+        return http_request(args, "PATCH", f"/nodes/{quote_path(node_id)}", {"memory": memory})
+    with get_db() as db:
+        require_node(db, node_id)
+        synced = sync_memory_attachments(db, node_id, memory)
+        node = graph_store.update_node(db, node_id, {"memory": synced}, actor="agent")
+        graph_store.append_event(db, event_type, "agent", {"node_id": node_id})
+        return node
+
+
+def sync_memory_attachments(db: Any, node_id: str, memory: dict[str, Any]) -> dict[str, Any]:
+    attachments = ensure_attachments(memory)
+    return {
+        **memory,
+        "attachments": {
+            **attachments,
+            "databases": file_library.sync_node_database_attachments(db, attachments["databases"]),
+            "files": file_library.sync_node_file_attachments(db, attachments["files"], node_id=node_id),
+            "scripts": attachments["scripts"],
+        },
+    }
+
+
+def mutate_attachment_list(
+    args: argparse.Namespace,
+    node_id: str,
+    kind: str,
+    mutate: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    node = load_node(args, node_id)
+    memory = node.get("memory") if isinstance(node.get("memory"), dict) else {}
+    attachments = ensure_attachments(memory)
+    attachments[kind] = mutate(attachments[kind])
+    memory = {**memory, "attachments": attachments}
+    return save_node_memory(args, node_id, memory, event_type=f"Node{kind.title()}EditedByAgent")
+
+
+def ensure_attachments(memory: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    raw = memory.get("attachments") if isinstance(memory.get("attachments"), dict) else {}
+    return {
+        "databases": attachment_items(raw.get("databases")),
+        "files": attachment_items(raw.get("files")),
+        "scripts": attachment_items(raw.get("scripts")),
+    }
+
+
+def node_attachments(node: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    memory = node.get("memory") if isinstance(node.get("memory"), dict) else {}
+    return ensure_attachments(memory)
+
+
+def attachment_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def update_attachment(
+    items: list[dict[str, Any]],
+    attachment_id: str,
+    changes: dict[str, Any],
+    label: str,
+) -> list[dict[str, Any]]:
+    updated = []
+    found = False
+    for item in items:
+        if str(item.get("id") or item.get("entry_id") or item.get("file_id") or "") == attachment_id:
+            updated.append({**item, **changes})
+            found = True
+        else:
+            updated.append(item)
+    if not found:
+        raise SystemExit(f"{label} not found: {attachment_id}")
+    return updated
+
+
+def delete_attachment(items: list[dict[str, Any]], attachment_id: str, label: str) -> list[dict[str, Any]]:
+    filtered = [
+        item
+        for item in items
+        if str(item.get("id") or item.get("entry_id") or item.get("file_id") or "") != attachment_id
+    ]
+    if len(filtered) == len(items):
+        raise SystemExit(f"{label} not found: {attachment_id}")
+    return filtered
+
+
+def search_nodes(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    query: str,
+    workspace_id: str | None,
+    anchor_id: str | None,
+    depth: int,
+    limit: int,
+    database_query: str | None = None,
+) -> list[dict[str, Any]]:
+    allowed = reachable_node_ids(nodes, edges, workspace_id or anchor_id, depth) if (workspace_id or anchor_id) else None
+    terms = tokenize(query)
+    database_terms = tokenize(database_query or "")
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for node in nodes:
+        if allowed is not None and node.get("id") not in allowed:
+            continue
+        if database_terms and not database_matches(node, database_terms):
+            continue
+        score = score_node(node, terms)
+        if database_terms:
+            score += 10
+        if score > 0:
+            scored.append((score, {**node, "match_score": score}))
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("updated_at") or "")), reverse=False)
+    return [node for _, node in scored[: max(1, min(limit, 100))]]
+
+
+def reachable_node_ids(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    start_id: str,
+    depth: int,
+) -> set[str]:
+    node_ids = {str(node.get("id")) for node in nodes}
+    if start_id not in node_ids:
+        return set()
+    adjacency: dict[str, set[str]] = {}
+    for edge in edges:
+        a = str(edge.get("node_a_id") or "")
+        b = str(edge.get("node_b_id") or "")
+        if a in node_ids and b in node_ids:
+            adjacency.setdefault(a, set()).add(b)
+            adjacency.setdefault(b, set()).add(a)
+    seen = {start_id}
+    frontier = {start_id}
+    for _ in range(max(0, depth)):
+        nxt = {neighbor for node_id in frontier for neighbor in adjacency.get(node_id, set()) if neighbor not in seen}
+        seen.update(nxt)
+        frontier = nxt
+        if not frontier:
+            break
+    return seen
+
+
+def score_node(node: dict[str, Any], terms: list[str]) -> int:
+    if not terms:
+        return 1
+    title = str(node.get("title") or "").lower()
+    summary = str(node.get("summary") or "").lower()
+    body = str(node.get("body") or "").lower()
+    attachment_text = json.dumps(node_attachments(node), ensure_ascii=False).lower()
+    score = 0
+    for term in terms:
+        if term in title:
+            score += 8
+        if term in summary:
+            score += 4
+        if term in body:
+            score += 3
+        if term in attachment_text:
+            score += 2
+    return score
+
+
+def database_matches(node: dict[str, Any], terms: list[str]) -> bool:
+    text = json.dumps(node_attachments(node).get("databases", []), ensure_ascii=False).lower()
+    return all(term in text for term in terms)
+
+
+def tokenize(value: str) -> list[str]:
+    return [part.lower() for part in str(value or "").split() if part.strip()]
+
+
+def nodes_list_path(*, include_archived: bool) -> str:
+    return "/nodes?include_archived=true" if include_archived else "/nodes"
+
+
+def read_json_input(args: argparse.Namespace) -> str:
+    if getattr(args, "json_text", None) is not None:
+        return args.json_text
+    path = Path(args.json_file).expanduser()
+    return path.read_text(encoding="utf-8")
+
+
+def parse_json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit("expected a JSON object")
+    return parsed
+
+
+def read_optional_text(value: str | None, path: str | None) -> str | None:
+    if path:
+        return Path(path).expanduser().read_text(encoding="utf-8")
+    return value
+
+
+def compact_dict(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item is not None}
+
+
 def require_node(db: Any, node_id: str) -> dict[str, Any]:
     node = graph_store.get_node(db, node_id)
     if not node:
@@ -498,13 +1014,7 @@ def quote_path(value: str) -> str:
     return urllib.parse.quote(str(value), safe="")
 
 
-def emit(result: Any, as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
-    if isinstance(result, dict) and "assistant_message" in result:
-        print(result["assistant_message"])
-        return
+def emit(result: Any) -> None:
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 

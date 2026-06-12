@@ -135,16 +135,27 @@ NEXT_PUBLIC_API_BASE_URL=http://你的后端地址 npm run dev
 
 ```bash
 me-agent chat "记录一个 todo：整理本周项目进展" --no-proposals
-me-agent nodes list --json
-me-agent proposals list --json
+me-agent nodes list
+me-agent nodes search "当前话题"
+me-agent proposals list
 ```
 
 默认 CLI 直接访问本地 SQLite。Codex 等外部智能体需要连接正在运行的后端时，可以使用 HTTP 模式，这样它和浏览器里的对话框共享同一个 Python 服务、会话和图节点 API：
 
 ```bash
-me-agent --api-url http://localhost:8000 chat "读取当前项目节点并更新摘要" --anchor node_xxx --json
-me-agent --api-url http://localhost:8000 nodes show node_xxx --json
-me-agent --api-url http://localhost:8000 proposals list --json
+me-agent --api-url http://localhost:8000 chat "读取当前项目节点并更新摘要" --anchor node_xxx
+me-agent --api-url http://localhost:8000 nodes show node_xxx
+me-agent --api-url http://localhost:8000 proposals list
+```
+
+CLI 的非交互命令默认输出 JSON。对于外部智能体，CLI 也提供无需 Proposal 审核的直接图编辑能力：
+
+```bash
+me-agent nodes create --title "新主题" --body "节点正文"
+me-agent nodes databases add node_xxx --name "实验数据库" --content-file ./notes.md
+me-agent nodes files add node_xxx --name "config.yaml" --path ./config.yaml
+me-agent nodes scripts add node_xxx --name "打开项目" --code 'open_app("code", ["."], cwd="$HOME/project")'
+me-agent nodes scripts run node_xxx script_xxx
 ```
 
 ## 节点知识库和文件
