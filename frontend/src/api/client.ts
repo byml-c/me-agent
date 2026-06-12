@@ -3,10 +3,11 @@ import type { ChatResponse, ChatSession, EgoGraph, EventLogItem, LibraryEntry, L
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(init?.headers ?? {})
     },
     cache: "no-store"
@@ -58,7 +59,19 @@ export const api = {
     list: (query?: string) => request<LibraryFile[]>(`/files${query ? `?query=${encodeURIComponent(query)}` : ""}`),
     create: (payload: { name: string; description?: string; media_type?: string; source_path?: string; content?: string }) =>
       request<LibraryFile>("/files", { method: "POST", body: JSON.stringify(payload) }),
-    get: (id: string) => request<LibraryFile>(`/files/${id}`)
+    upload: (file: File, payload: { description?: string; node_id?: string } = {}) => {
+      const form = new FormData();
+      form.append("file", file);
+      if (payload.description) {
+        form.append("description", payload.description);
+      }
+      if (payload.node_id) {
+        form.append("node_id", payload.node_id);
+      }
+      return request<LibraryFile>("/files/upload", { method: "POST", body: form });
+    },
+    get: (id: string) => request<LibraryFile>(`/files/${id}`),
+    downloadUrl: (id: string) => `${API_BASE}/files/${id}/download`
   },
   library: {
     listEntries: (query?: string, kind?: "text" | "file") =>

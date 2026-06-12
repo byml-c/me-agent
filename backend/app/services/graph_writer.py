@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import re
 from typing import Any
 
 from backend.app.services import graph_store
@@ -103,7 +104,20 @@ def apply_auto_updates(db: sqlite3.Connection, proposals: list[dict[str, Any]]) 
 
 def infer_title(text: str) -> str:
     first_line = " ".join(text.strip().split())
-    return first_line[:42] or "未命名节点"
+    for pattern in (
+        r"(?:在|到|给).+?(?:下|下面|里|里面|中|之下)\s*(?:新建|创建|新增|记录|整理)\s*(?:一个|一条|1 个|1个)?\s*(?P<title>.+?)(?:节点|node)?(?:[。.!！?？].*)?$",
+        r"(?:新建|创建|新增|记录|整理)\s*(?:一个|一条|1 个|1个)?\s*(?P<title>.+?)(?:节点|node)?(?:[。.!！?？].*)?$",
+    ):
+        match = re.search(pattern, first_line, flags=re.IGNORECASE)
+        if match:
+            title = clean_node_title(match.group("title"))
+            if title:
+                return title[:42]
+    return clean_node_title(first_line)[:42] or "未命名节点"
+
+
+def clean_node_title(title: str) -> str:
+    return re.sub(r"(?:节点|node)$", "", title.strip(" ：:，,。.!！?？\"'“”‘’")).strip()
 
 
 def apply_proposal(db: sqlite3.Connection, proposal: dict[str, Any]) -> dict[str, Any]:
@@ -119,7 +133,7 @@ def apply_proposal(db: sqlite3.Connection, proposal: dict[str, Any]) -> dict[str
         )
         for target_id in proposal["target_ids"]:
             if target_id and target_id != node["id"] and graph_store.get_node(db, target_id):
-                graph_store.create_edge(db, node["id"], target_id, weight=0.5, is_candidate=False, created_by="agent")
+                graph_store.create_edge(db, target_id, node["id"], weight=0.5, is_candidate=False, created_by="agent")
         return {"node": node}
     if operation == "create_edge":
         node_a_id = payload.get("node_a_id") or (proposal["target_ids"][0] if proposal["target_ids"] else None)
@@ -172,6 +186,6 @@ def apply_proposal(db: sqlite3.Connection, proposal: dict[str, Any]) -> dict[str
         for node in created:
             for target_id in proposal["target_ids"]:
                 if target_id and target_id != node["id"] and graph_store.get_node(db, target_id):
-                    graph_store.create_edge(db, node["id"], target_id, weight=0.4, is_candidate=False, created_by="agent")
+                    graph_store.create_edge(db, target_id, node["id"], weight=0.4, is_candidate=False, created_by="agent")
         return {"nodes": created}
     return {"ignored": True, "operation": operation}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Download, Plus, Trash2 } from "lucide-react";
 import { api } from "@/api/client";
 import type { NodeDatabaseAttachment } from "@/types";
 import type { DraftChange, NodeEditorDraft } from "./types";
@@ -60,29 +60,39 @@ export function DatabaseCollectionEditor({ draft, initialId, onDraftChange }: Da
     if (!selectedFile) {
       return;
     }
-    const content = await selectedFile.text();
     updateDatabase(database.id, {
       kind: "file",
       name: database.name || selectedFile.name,
       path: selectedFile.name,
       media_type: selectedFile.type || "text/plain",
-      content,
+      content: "",
       summary: "正在生成摘要...",
       description: "正在生成摘要..."
     });
     setSummarizingIds((current) => new Set(current).add(database.id));
     try {
-      const entry = await api.library.createEntry({
-        title: database.name || selectedFile.name,
-        description: database.summary || database.description,
-        content
+      const uploaded = await api.files.upload(selectedFile, {
+        description: database.summary || database.description
       });
       updateDatabase(database.id, {
-        entry_id: entry.id,
-        summary: entry.summary || entry.description || "",
-        description: entry.summary || entry.description || ""
+        entry_id: undefined,
+        file_id: uploaded.id,
+        kind: "file",
+        name: uploaded.name,
+        path: uploaded.source_path || uploaded.name,
+        media_type: uploaded.media_type || selectedFile.type || "",
+        content: uploaded.content || "",
+        summary: uploaded.summary || uploaded.description || "",
+        description: uploaded.summary || uploaded.description || "",
+        download_url: uploaded.download_url || api.files.downloadUrl(uploaded.id),
+        size_bytes: uploaded.size_bytes,
+        text_extracted: uploaded.text_extracted
       });
-      void pollEntrySummary(database.id, entry.id, entry.summary || entry.description || "");
+      setSummarizingIds((current) => {
+        const next = new Set(current);
+        next.delete(database.id);
+        return next;
+      });
     } catch (error) {
       console.error(error);
       updateDatabase(database.id, { summary: database.summary || "", description: database.description || "" });
@@ -185,14 +195,33 @@ export function DatabaseCollectionEditor({ draft, initialId, onDraftChange }: Da
             </label>
             <span className="inline-flex h-8 items-center rounded-full bg-emerald-50 px-3 text-xs font-semibold text-emerald-700">{selected.kind === "file" ? "文件" : "文本"}</span>
             {summarizingIds.has(selected.id) ? <span className="text-xs font-semibold text-amber-600">正在生成摘要...</span> : null}
-            <span className="ml-auto text-xs text-slate-400">{(selected.content ?? "").length} chars</span>
+            {selected.kind === "file" && selected.file_id ? (
+              <a
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+                href={selected.download_url || api.files.downloadUrl(selected.file_id)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Download size={14} />
+                下载原文件
+              </a>
+            ) : null}
+            <span className="ml-auto text-xs text-slate-400">{formatAttachmentSize(selected)}</span>
           </div>
-          <textarea
-            className="min-h-0 w-full resize-none rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-900 outline-none transition focus:border-emerald-600 focus:bg-white focus:ring-4 focus:ring-emerald-600/10"
-            value={selected.content ?? ""}
-            onChange={(event) => updateDatabase(selected.id, { content: event.target.value, kind: selected.kind ?? "text" })}
-            placeholder="输入知识正文，或上传文本文件。"
-          />
+          {selected.kind === "file" && selected.text_extracted === false ? (
+            <div className="min-h-0 rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-600">
+              <p className="font-semibold text-slate-800">非文本文件</p>
+              <p>编辑页只保留摘要和元数据。需要完整内容时，请下载原文件访问。</p>
+              <p className="mt-2 text-xs text-slate-400">{selected.media_type || "unknown"} · {formatBytes(selected.size_bytes ?? 0)}</p>
+            </div>
+          ) : (
+            <textarea
+              className="min-h-0 w-full resize-none rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-900 outline-none transition focus:border-emerald-600 focus:bg-white focus:ring-4 focus:ring-emerald-600/10"
+              value={selected.content ?? ""}
+              onChange={(event) => updateDatabase(selected.id, { content: event.target.value, kind: selected.kind ?? "text" })}
+              placeholder="输入知识正文，或上传文本文件。"
+            />
+          )}
         </section>
       ) : (
         <div className="grid place-items-center text-sm text-slate-500">添加一个知识条目开始编辑。</div>
@@ -210,4 +239,21 @@ function newAttachmentId(prefix: string): string {
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function formatAttachmentSize(item: NodeDatabaseAttachment) {
+  if (item.kind === "file") {
+    return `${formatBytes(item.size_bytes ?? 0)}${item.text_extracted === false ? " · summary only" : ""}`;
+  }
+  return `${(item.content ?? "").length} chars`;
+}
+
+function formatBytes(size: number) {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }

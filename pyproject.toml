@@ -9,6 +9,7 @@ dependencies = [
   "uvicorn[standard]>=0.30.0",
   "pydantic>=2.8.0",
   "openai>=2.41.0",
+  "python-multipart>=0.0.20",
 ]
 
 [build-system]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,9 +22,20 @@ from backend.app.services import graph_store
 
 app = FastAPI(title="Me.Agent API", version="0.1.0")
 
+DEFAULT_CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+def get_cors_origins() -> list[str]:
+    raw_origins = os.getenv("ME_AGENT_CORS_ORIGINS")
+    if not raw_origins:
+        return DEFAULT_CORS_ORIGINS
+    origins = [origin.strip().rstrip("/") for origin in raw_origins.split(",")]
+    return [origin for origin in origins if origin]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

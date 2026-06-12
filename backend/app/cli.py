@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -17,9 +20,10 @@ CommandHandler = Callable[[argparse.Namespace], Any]
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    init_db()
-    if not args.no_seed:
-        seed_if_empty()
+    if not args.api_url:
+        init_db()
+        if not args.no_seed:
+            seed_if_empty()
     result = args.handler(args)
     if result is not None:
         emit(result, as_json=args.json)
@@ -30,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="me-agent", description="Me.Agent backend CLI")
     parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
     parser.add_argument("--no-seed", action="store_true", help="do not seed the database before running")
+    parser.add_argument("--api-url", help="connect to a running Me.Agent HTTP backend instead of local SQLite")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     chat_parser = subparsers.add_parser("chat", help="send one message or start an interactive chat")
@@ -182,6 +187,22 @@ def interactive_chat(args: argparse.Namespace) -> None:
 
 
 def run_chat(args: argparse.Namespace, message: str) -> dict[str, Any]:
+    if args.api_url:
+        return http_request(
+            args,
+            "POST",
+            "/chat",
+            {
+                "session_id": args.session_id,
+                "message": message,
+                "anchor_node_ids": args.anchor_node_ids,
+                "workspace_id": args.workspace_id,
+                "options": {
+                    "allow_proposals": not args.no_proposals,
+                    "context_budget": args.context_budget,
+                },
+            },
+        )
     with get_db() as db:
         return agent_runtime.chat(
             db,
@@ -195,11 +216,15 @@ def run_chat(args: argparse.Namespace, message: str) -> dict[str, Any]:
 
 
 def handle_sessions_list(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/chat/sessions?limit={args.limit}")
     with get_db() as db:
         return graph_store.list_sessions(db, limit=args.limit)
 
 
 def handle_sessions_show(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/chat/sessions/{quote_path(args.session_id)}")
     with get_db() as db:
         session = graph_store.get_session(db, args.session_id)
         if not session:
@@ -208,16 +233,28 @@ def handle_sessions_show(args: argparse.Namespace) -> Any:
 
 
 def handle_nodes_list(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        query = "?include_archived=true" if args.include_archived else ""
+        return http_request(args, "GET", f"/nodes{query}")
     with get_db() as db:
         return graph_store.list_nodes(db, include_archived=args.include_archived)
 
 
 def handle_nodes_create(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(
+            args,
+            "POST",
+            "/nodes",
+            {"title": args.title, "body": args.body, "summary": args.summary, "is_workspace": False},
+        )
     with get_db() as db:
         return graph_store.create_node(db, args.title, args.body, args.summary)
 
 
 def handle_nodes_show(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/nodes/{quote_path(args.node_id)}")
     with get_db() as db:
         node = graph_store.get_node(db, args.node_id)
         if not node:
@@ -229,6 +266,8 @@ def handle_nodes_update(args: argparse.Namespace) -> Any:
     changes = optional_changes(args, ["title", "body", "summary", "status"])
     if args.workspace:
         changes["is_workspace"] = True
+    if args.api_url:
+        return http_request(args, "PATCH", f"/nodes/{quote_path(args.node_id)}", changes)
     with get_db() as db:
         node = graph_store.update_node(db, args.node_id, changes)
         if not node:
@@ -237,6 +276,8 @@ def handle_nodes_update(args: argparse.Namespace) -> Any:
 
 
 def handle_nodes_archive(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "POST", f"/nodes/{quote_path(args.node_id)}/archive")
     with get_db() as db:
         node = graph_store.update_node(db, args.node_id, {"status": "archived"})
         if not node:
@@ -245,23 +286,36 @@ def handle_nodes_archive(args: argparse.Namespace) -> Any:
 
 
 def handle_nodes_neighbors(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/nodes/{quote_path(args.node_id)}/neighbors")
     with get_db() as db:
         require_node(db, args.node_id)
         return graph_store.neighbors(db, args.node_id)
 
 
 def handle_nodes_ego_graph(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", f"/nodes/{quote_path(args.node_id)}/ego-graph?depth={args.depth}&limit={args.limit}")
     with get_db() as db:
         require_node(db, args.node_id)
         return graph_store.ego_graph(db, args.node_id, depth=args.depth, limit=args.limit)
 
 
 def handle_workspaces_list(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", "/workspaces")
     with get_db() as db:
         return [node for node in graph_store.list_nodes(db) if node["is_workspace"]]
 
 
 def handle_workspaces_create(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(
+            args,
+            "POST",
+            "/nodes",
+            {"title": args.title, "body": args.body, "summary": args.summary, "is_workspace": True},
+        )
     with get_db() as db:
         return graph_store.create_node(db, args.title, args.body, args.summary, is_workspace=True)
 
@@ -280,11 +334,25 @@ def handle_workspaces_show(args: argparse.Namespace) -> Any:
 
 
 def handle_edges_list(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "GET", "/edges")
     with get_db() as db:
         return graph_store.list_edges(db)
 
 
 def handle_edges_create(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(
+            args,
+            "POST",
+            "/edges",
+            {
+                "node_a_id": args.node_a_id,
+                "node_b_id": args.node_b_id,
+                "weight": args.weight,
+                "is_candidate": args.candidate,
+            },
+        )
     with get_db() as db:
         return graph_store.create_edge(
             db,
@@ -301,6 +369,8 @@ def handle_edges_update(args: argparse.Namespace) -> Any:
         changes["weight"] = args.weight
     if args.candidate:
         changes["is_candidate"] = True
+    if args.api_url:
+        return http_request(args, "PATCH", f"/edges/{quote_path(args.edge_id)}", changes)
     with get_db() as db:
         edge = graph_store.update_edge(db, args.edge_id, changes)
         if not edge:
@@ -309,6 +379,8 @@ def handle_edges_update(args: argparse.Namespace) -> Any:
 
 
 def handle_edges_delete(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "DELETE", f"/edges/{quote_path(args.edge_id)}")
     with get_db() as db:
         if not graph_store.get_edge(db, args.edge_id):
             raise SystemExit(f"edge not found: {args.edge_id}")
@@ -317,6 +389,9 @@ def handle_edges_delete(args: argparse.Namespace) -> Any:
 
 
 def handle_proposals_list(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        query = f"?status={urllib.parse.quote(args.status)}" if args.status else ""
+        return http_request(args, "GET", f"/proposals{query}")
     with get_db() as db:
         return graph_store.list_proposals(db, status=args.status)
 
@@ -330,6 +405,8 @@ def handle_proposals_show(args: argparse.Namespace) -> Any:
 
 
 def handle_proposals_accept(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "POST", f"/proposals/{quote_path(args.proposal_id)}/accept")
     with get_db() as db:
         proposal = graph_store.get_proposal(db, args.proposal_id)
         if not proposal:
@@ -340,6 +417,8 @@ def handle_proposals_accept(args: argparse.Namespace) -> Any:
 
 
 def handle_proposals_reject(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        return http_request(args, "POST", f"/proposals/{quote_path(args.proposal_id)}/reject")
     with get_db() as db:
         proposal = graph_store.resolve_proposal(db, args.proposal_id, "rejected")
         if not proposal:
@@ -348,6 +427,11 @@ def handle_proposals_reject(args: argparse.Namespace) -> Any:
 
 
 def handle_events(args: argparse.Namespace) -> Any:
+    if args.api_url:
+        params = {"limit": str(args.limit)}
+        if args.node_id:
+            params["node_id"] = args.node_id
+        return http_request(args, "GET", f"/events?{urllib.parse.urlencode(params)}")
     with get_db() as db:
         return graph_store.list_events(db, limit=args.limit, node_id=args.node_id)
 
@@ -385,6 +469,33 @@ def parse_key_values(values: list[str]) -> dict[str, str]:
         key, item = value.split("=", 1)
         parsed[key] = item
     return parsed
+
+
+def http_request(args: argparse.Namespace, method: str, path: str, payload: Any | None = None) -> Any:
+    base_url = str(args.api_url or "").rstrip("/")
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(f"{base_url}{path}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            if response.status == 204:
+                return None
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"failed to connect to backend: {exc.reason}") from exc
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+def quote_path(value: str) -> str:
+    return urllib.parse.quote(str(value), safe="")
 
 
 def emit(result: Any, as_json: bool) -> None:

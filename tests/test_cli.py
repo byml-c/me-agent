@@ -48,3 +48,60 @@ def test_cli_accepts_create_node_proposal(isolated_db, capsys):
 
     assert result["proposal"]["status"] == "accepted"
     assert result["applied"]["node"]["title"] == "提案节点"
+
+
+def test_cli_create_node_proposal_links_parent_to_child(isolated_db, capsys):
+    with get_db() as db:
+        parent = graph_store.create_node(db, title="父节点", body="parent")
+        proposal = graph_store.create_proposal(
+            db,
+            operation="create_node",
+            target_ids=[parent["id"]],
+            payload={"title": "子节点", "body": "child"},
+            reason="test",
+        )
+
+    result = run_cli(["proposals", "accept", proposal["id"]], capsys)
+    child_id = result["applied"]["node"]["id"]
+
+    with get_db() as db:
+        edge = graph_store.get_edge_between(db, parent["id"], child_id)
+        reverse_edge = graph_store.get_edge_between(db, child_id, parent["id"])
+
+    assert edge is not None
+    assert reverse_edge is None
+
+
+def test_cli_http_chat_posts_to_backend(monkeypatch, capsys):
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"session_id": "sess_1", "assistant_message": "ok", "proposals": []}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["payload"] = json.loads(request.data.decode())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+
+    exit_code = cli.main(["--json", "--api-url", "http://localhost:8000", "chat", "hello", "--anchor", "node_1"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert captured["url"] == "http://localhost:8000/chat"
+    assert captured["method"] == "POST"
+    assert captured["payload"]["message"] == "hello"
+    assert captured["payload"]["anchor_node_ids"] == ["node_1"]
+    assert result["assistant_message"] == "ok"

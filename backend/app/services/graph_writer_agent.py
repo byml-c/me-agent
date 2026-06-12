@@ -24,6 +24,11 @@ GRAPH_WRITER_SYSTEM_PROMPT = """你是 Me.Agent 的 Graph Writer Agent。
 - split_node
 - promote_to_workspace
 
+创建节点标题规则:
+- 如果用户说“在/到/给 X 下/下面/里新建 Y 节点”，X 是父节点或挂载位置，不要写进新节点标题。
+- create_node 的 payload.title 只写新节点自身名称。例如“在 Tactile 下面新建一个文献整理节点”应输出 title="文献整理"，target_ids 指向 Tactile 对应节点。
+- 不要为了表达层级关系把父节点名拼成 “X Y” 或 “X：Y”；层级关系由 target_ids 和边表达。
+
 输出 JSON schema:
 {
   "proposals": [
@@ -56,6 +61,11 @@ GRAPH_WRITER_STREAM_SYSTEM_PROMPT = """你是 Me.Agent 的 Graph Writer Agent。
   "confidence": 0.0,
   "risk_level": "low" | "medium" | "high"
 }
+
+创建节点标题规则:
+- 如果用户说“在/到/给 X 下/下面/里新建 Y 节点”，X 是父节点或挂载位置，不要写进新节点标题。
+- create_node 的 payload.title 只写新节点自身名称。例如“在 Tactile 下面新建一个文献整理节点”应输出 title="文献整理"，target_ids 指向 Tactile 对应节点。
+- 不要为了表达层级关系把父节点名拼成 “X Y” 或 “X：Y”；层级关系由 target_ids 和边表达。
 """
 
 

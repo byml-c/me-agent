@@ -100,7 +100,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "create_node",
-        "description": "把本轮对话中明确值得长期保存的信息沉淀为新节点。默认创建孤立节点；只有当新节点确实应直接连接到已有节点时，才填写 link_to_node_ids。",
+        "description": "把本轮对话中明确值得长期保存的信息沉淀为新节点。默认创建孤立节点；只有当新节点确实应直接连接到已有节点时，才填写 link_to_node_ids。若用户说“在/到/给 X 下/下面/里新建 Y 节点”，title 只写 Y，不要包含父节点名 X。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -118,7 +118,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "update_node",
-        "description": "修改已有节点。该操作只会创建待审核提案，用户接受后才会写入。",
+        "description": "直接修改已有节点的标题、正文、摘要或状态。正文里可以沉淀对用户的长短期记忆；图结构变化仍必须使用单独工具生成审核提案。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -131,6 +131,23 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "reason": {"type": "string"},
             },
             "required": ["node_id", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "write_library_entry",
+        "description": "直接写入冷存储知识库条目，用于保存不适合放进节点正文的结构化背景、事实、摘录或长期记忆。不会改变图结构。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "description": {"type": "string"},
+                "kind": {"type": "string", "enum": ["text"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["title", "content", "reason"],
             "additionalProperties": False,
         },
     },
@@ -255,6 +272,8 @@ def execute_tool(db: sqlite3.Connection, name: str, arguments: dict[str, Any], c
         return create_node(db, arguments, context)
     if name == "update_node":
         return update_node(db, arguments)
+    if name == "write_library_entry":
+        return write_library_entry(db, arguments)
     if name == "create_edge":
         return create_edge(db, arguments)
     if name == "promote_to_workspace":
@@ -304,16 +323,47 @@ def update_node(db: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, 
     if not graph_store.get_node(db, node_id):
         return {"ok": False, "error": "node not found"}
     changes = {key: arguments.get(key) for key in ["title", "body", "summary", "is_workspace", "status"] if key in arguments}
-    proposal = graph_store.create_proposal(
+    if "is_workspace" in changes or changes.get("status") == "archived":
+        proposal = graph_store.create_proposal(
+            db,
+            operation="edit_node",
+            target_ids=[node_id],
+            payload={"node_id": node_id, **changes},
+            reason=str(arguments.get("reason") or "模型建议修改节点。"),
+            confidence=0.76,
+            risk_level="high",
+        )
+        return {"ok": True, "review_required": True, "proposal": proposal}
+    node = graph_store.update_node(db, node_id, changes, actor="agent")
+    return {
+        "ok": bool(node),
+        "review_required": False,
+        "node": node,
+        "reason": str(arguments.get("reason") or "模型直接更新节点正文或摘要。"),
+    }
+
+
+def write_library_entry(db: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, Any]:
+    entry = file_library.create_or_update_entry(
         db,
-        operation="edit_node",
-        target_ids=[node_id],
-        payload={"node_id": node_id, **changes},
-        reason=str(arguments.get("reason") or "模型建议修改节点。"),
-        confidence=0.76,
-        risk_level="high" if "body" in changes or changes.get("status") == "archived" else "medium",
+        title=str(arguments.get("title") or "未命名冷存储条目"),
+        description=str(arguments.get("description") or arguments.get("reason") or "") or None,
+        content=str(arguments.get("content") or ""),
+        kind="text",
+        actor="agent",
     )
-    return {"ok": True, "review_required": True, "proposal": proposal}
+    return {
+        "ok": True,
+        "review_required": False,
+        "entry": {
+            "id": entry["id"],
+            "title": entry["title"],
+            "description": entry.get("description"),
+            "summary": entry.get("summary"),
+            "kind": entry.get("kind"),
+        },
+        "reason": str(arguments.get("reason") or "模型写入冷存储知识库。"),
+    }
 
 
 def create_edge(db: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -101,7 +101,9 @@ const graphBatchToolbarClass = "absolute left-4 top-4 z-20 flex flex-wrap items-
 const graphBatchButtonClass = "rounded-full bg-slate-900 px-3 py-1.5 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40";
 const COLLAPSED_GROUPS_STORAGE_KEY = "me-agent:collapsed-graph-groups";
 const NODE_POSITIONS_STORAGE_KEY = "me-agent:graph-node-positions";
+const GRAPH_VIEWPORT_STORAGE_KEY = "me-agent:graph-viewport";
 const NODE_POSITION_SAVE_INTERVAL_MS = 1200;
+const GRAPH_VIEWPORT_SAVE_INTERVAL_MS = 250;
 
 export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = false, refreshKey = 0, reviewProposals = [], showDirectedEdges = true, showCutpointGroups = true, editMode = false }: Props) {
   const gridPatternId = useId().replaceAll(":", "");
@@ -115,6 +117,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
   const connectionRef = useRef<ConnectionState | null>(null);
   const temporaryLinkRef = useRef<d3.Selection<SVGLineElement, unknown, null, undefined> | null>(null);
   const lastPositionSaveRef = useRef(0);
+  const lastViewportSaveRef = useRef(0);
   const undoStackRef = useRef<UndoAction[]>([]);
   const [graph, setGraph] = useState<EgoGraph>({ nodes: [], edges: [] });
   const [selectedAnchor, setSelectedAnchor] = useState<string | undefined>(anchorId);
@@ -125,6 +128,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
   useEffect(() => {
     nodePositionsRef.current = loadStoredNodePositions();
+    zoomTransformRef.current = loadStoredGraphViewport();
     setCollapsedGroupIds(loadCollapsedGroupIds());
     refreshGraph().catch(console.error);
   }, [refreshKey]);
@@ -600,27 +604,6 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
         startConnection(node, draftLayer);
       });
 
-    controlSelection
-      .append("circle")
-      .attr("class", `${graphControlDotClass} ${graphControlDotDeleteClass}`)
-      .attr("r", 11)
-      .attr("cx", -18)
-      .attr("cy", -18)
-      .on("click", (event, node) => {
-        event.stopPropagation();
-        deleteNode(node.sourceNode);
-      });
-
-    controlSelection
-      .append("g")
-      .attr("class", graphControlTrashClass)
-      .attr("transform", "translate(-25,-25) scale(0.58)")
-      .html('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>')
-      .on("click", (event, node) => {
-        event.stopPropagation();
-        deleteNode(node.sourceNode);
-      });
-
     nodeSelection
       .on("mouseenter", (_, node) => {
         cancelHideControls();
@@ -715,6 +698,14 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
         zoomTransformRef.current = event.transform;
         gridPattern.attr("patternTransform", event.transform.toString());
         root.attr("transform", event.transform.toString());
+        if (event.sourceEvent) {
+          saveGraphViewportSoon(event.transform, lastViewportSaveRef);
+        }
+      })
+      .on("end", (event) => {
+        if (event.sourceEvent) {
+          saveStoredGraphViewport(zoomTransformRef.current);
+        }
       });
     svg.call(zoom);
     gridPattern.attr("patternTransform", zoomTransformRef.current.toString());
@@ -774,6 +765,7 @@ export function GraphPanel({ anchorId, onSelectNode, onCreateNode, compact = fal
 
     return () => {
       saveStoredNodePositions(nodePositionsRef.current);
+      saveStoredGraphViewport(zoomTransformRef.current);
       simulation.stop();
       simulationRef.current = null;
       temporaryLinkRef.current = null;
@@ -1247,6 +1239,33 @@ function loadStoredNodePositions() {
   }
 }
 
+function loadStoredGraphViewport() {
+  if (typeof window === "undefined") {
+    return d3.zoomIdentity;
+  }
+  try {
+    const raw = window.localStorage.getItem(GRAPH_VIEWPORT_STORAGE_KEY);
+    if (!raw) {
+      return d3.zoomIdentity;
+    }
+    const parsed = JSON.parse(raw) as { x?: number; y?: number; k?: number };
+    const { x, y, k } = parsed;
+    if (
+      typeof x !== "number" ||
+      typeof y !== "number" ||
+      typeof k !== "number" ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(k)
+    ) {
+      return d3.zoomIdentity;
+    }
+    return d3.zoomIdentity.translate(x, y).scale(k);
+  } catch {
+    return d3.zoomIdentity;
+  }
+}
+
 function loadCollapsedGroupIds() {
   if (typeof window === "undefined") {
     return [];
@@ -1278,6 +1297,29 @@ function saveNodePositionsSoon(positions: Map<string, { x: number; y: number }>,
   }
   lastSaveRef.current = now;
   saveStoredNodePositions(positions);
+}
+
+function saveGraphViewportSoon(transform: d3.ZoomTransform, lastSaveRef: { current: number }) {
+  const now = Date.now();
+  if (now - lastSaveRef.current < GRAPH_VIEWPORT_SAVE_INTERVAL_MS) {
+    return;
+  }
+  lastSaveRef.current = now;
+  saveStoredGraphViewport(transform);
+}
+
+function saveStoredGraphViewport(transform: d3.ZoomTransform) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      GRAPH_VIEWPORT_STORAGE_KEY,
+      JSON.stringify({ x: transform.x, y: transform.y, k: transform.k })
+    );
+  } catch {
+    // Ignore storage failures; the graph can still fall back to the default viewport.
+  }
 }
 
 function saveStoredNodePositions(positions: Map<string, { x: number; y: number }>) {

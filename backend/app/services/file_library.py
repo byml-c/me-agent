@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import mimetypes
 import re
 import sqlite3
 import threading
@@ -10,11 +11,21 @@ import time
 from pathlib import Path
 from typing import Any
 
+from backend.app.core.config import get_settings
 from backend.app.db.session import dumps, get_db, loads, utc_now
 from backend.app.services import graph_store, llm
 
 VECTOR_DIMENSIONS = 256
 TOKEN_PATTERN = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
+TEXT_SUFFIXES = {".md", ".txt", ".py", ".json", ".yaml", ".yml", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".csv", ".xml", ".toml"}
+TEXT_MEDIA_PREFIXES = ("text/",)
+TEXT_MEDIA_TYPES = {
+    "application/json",
+    "application/javascript",
+    "application/xml",
+    "application/x-yaml",
+    "application/toml",
+}
 
 
 def list_files(db: sqlite3.Connection, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -153,34 +164,54 @@ def create_or_reuse_file(
     media_type: str | None = None,
     source_path: str | None = None,
     content: str | None = None,
+    raw_bytes: bytes | None = None,
     actor: str = "user",
 ) -> dict[str, Any]:
     normalized_name = name.strip() or "未命名文件"
     normalized_description = (description or "").strip() or None
     normalized_path = (source_path or "").strip() or None
-    normalized_media_type = (media_type or "").strip() or infer_media_type(normalized_name, normalized_path, content)
-    stored_content = content
-    if stored_content is None and normalized_path:
+    file_bytes = raw_bytes
+    if file_bytes is None and content is not None:
+        file_bytes = content.encode("utf-8")
+    if file_bytes is None and normalized_path:
         path = Path(normalized_path).expanduser()
         if path.exists() and path.is_file():
-            stored_content = path.read_text(encoding="utf-8")
-    if stored_content is None:
-        stored_content = ""
-    summary = summarize_for_library(normalized_name, normalized_description, stored_content)
+            file_bytes = path.read_bytes()
+    if file_bytes is None:
+        file_bytes = b""
+    normalized_media_type = (media_type or "").strip() or infer_media_type(normalized_name, normalized_path, content, file_bytes)
+    text_extracted = is_text_file(normalized_name, normalized_media_type, file_bytes)
+    stored_content = content if content is not None else decode_text_content(file_bytes) if text_extracted else ""
+    size_bytes = len(file_bytes)
+    summary = summarize_for_file(normalized_name, normalized_description, stored_content, normalized_media_type, size_bytes)
     normalized_description = summary or normalized_description
-    hash_material = stored_content if stored_content or normalized_path else normalized_name
-    content_hash = hashlib.sha256(hash_material.encode("utf-8")).hexdigest()
+    content_hash = hashlib.sha256(file_bytes or normalized_name.encode("utf-8")).hexdigest()
     existing = db.execute("SELECT * FROM library_files WHERE content_hash = ?", (content_hash,)).fetchone()
     now = utc_now()
+    storage_path = ensure_stored_file(content_hash, normalized_name, file_bytes) if file_bytes else None
     if existing:
         db.execute(
             """
             UPDATE library_files
             SET name = ?, description = ?, summary = ?,
-                media_type = COALESCE(?, media_type), source_path = COALESCE(?, source_path), updated_at = ?
+                media_type = COALESCE(?, media_type), source_path = COALESCE(?, source_path),
+                storage_path = COALESCE(?, storage_path), size_bytes = MAX(size_bytes, ?),
+                text_extracted = ?, content = ?, updated_at = ?
             WHERE id = ?
             """,
-            (normalized_name, normalized_description, summary, normalized_media_type, normalized_path, now, existing["id"]),
+            (
+                normalized_name,
+                normalized_description,
+                summary,
+                normalized_media_type,
+                normalized_path,
+                storage_path,
+                size_bytes,
+                int(text_extracted),
+                stored_content,
+                now,
+                existing["id"],
+            ),
         )
         item = get_file(db, existing["id"])
     else:
@@ -188,8 +219,8 @@ def create_or_reuse_file(
         db.execute(
             """
             INSERT INTO library_files
-            (id,name,description,summary,media_type,source_path,content,content_hash,linked_node_ids,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (id,name,description,summary,media_type,source_path,storage_path,size_bytes,text_extracted,content,content_hash,linked_node_ids,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 file_id,
@@ -198,6 +229,9 @@ def create_or_reuse_file(
                 summary,
                 normalized_media_type,
                 normalized_path,
+                storage_path,
+                size_bytes,
+                int(text_extracted),
                 stored_content,
                 content_hash,
                 dumps([]),
@@ -219,10 +253,54 @@ def create_or_reuse_file(
     )
     db.execute(
         "UPDATE library_entries SET metadata = ? WHERE id = ?",
-        (dumps({"media_type": item.get("media_type"), "source_path": item.get("source_path")}), entry["id"]),
+        (
+            dumps(
+                {
+                    "media_type": item.get("media_type"),
+                    "source_path": item.get("source_path"),
+                    "file_id": item.get("id"),
+                    "download_url": f"/files/{item['id']}/download",
+                    "size_bytes": item.get("size_bytes") or 0,
+                    "text_extracted": bool(item.get("text_extracted")),
+                }
+            ),
+            entry["id"],
+        ),
     )
     graph_store.append_event(db, "LibraryFileUpserted", actor, {"file_id": item["id"], "name": item["name"]})
     return get_file(db, item["id"]) or item
+
+
+def get_file_storage_path(item: dict[str, Any]) -> Path | None:
+    storage_path = str(item.get("storage_path") or "").strip()
+    if not storage_path:
+        return None
+    path = Path(storage_path)
+    if not path.is_absolute():
+        path = get_settings().file_storage_path / path
+    try:
+        path.relative_to(get_settings().file_storage_path.resolve())
+    except ValueError:
+        return None
+    return path if path.exists() and path.is_file() else None
+
+
+def ensure_stored_file(content_hash: str, name: str, data: bytes) -> str:
+    storage_root = get_settings().file_storage_path
+    storage_root.mkdir(parents=True, exist_ok=True)
+    suffix = safe_suffix(name)
+    filename = f"{content_hash[:16]}{suffix}"
+    path = storage_root / filename
+    if not path.exists():
+        path.write_bytes(data)
+    return filename
+
+
+def safe_suffix(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if not suffix or len(suffix) > 16 or not re.fullmatch(r"\.[a-z0-9][a-z0-9._-]*", suffix):
+        return ".bin"
+    return suffix
 
 
 def sync_node_file_attachments(db: sqlite3.Connection, attachments: list[dict[str, Any]], node_id: str | None = None) -> list[dict[str, Any]]:
@@ -252,6 +330,9 @@ def sync_node_file_attachments(db: sqlite3.Connection, attachments: list[dict[st
                 "content": str(linked.get("content") or ""),
                 "summary": str(attachment_summary(attachment) or linked.get("summary") or ""),
                 "media_type": str(attachment.get("media_type") or linked.get("media_type") or ""),
+                "download_url": f"/files/{linked['id']}/download",
+                "size_bytes": int(linked.get("size_bytes") or 0),
+                "text_extracted": bool(linked.get("text_extracted")),
             }
         )
     update_linked_nodes_for_files(db, linked_ids, node_id)
@@ -308,6 +389,9 @@ def sync_node_database_attachments(db: sqlite3.Connection, attachments: list[dic
                 "summary": str(attachment_summary(attachment) or linked.get("summary") or ""),
                 "media_type": str(attachment.get("media_type") or linked.get("metadata", {}).get("media_type") or ""),
                 "path": str(attachment.get("path") or linked.get("metadata", {}).get("source_path") or ""),
+                "download_url": f"/files/{linked.get('source_file_id')}/download" if linked.get("source_file_id") else "",
+                "size_bytes": int(linked.get("metadata", {}).get("size_bytes") or 0),
+                "text_extracted": bool(linked.get("metadata", {}).get("text_extracted", True)),
             }
         )
     return synced
@@ -330,6 +414,15 @@ def summarize_for_library(title: str, description: str | None, content: str) -> 
     if description:
         return compact_text(description, 240)
     return compact_text(" ".join(part for part in [title, content] if part), 240)
+
+
+def summarize_for_file(title: str, description: str | None, content: str, media_type: str, size_bytes: int) -> str:
+    if description:
+        return compact_text(description, 240)
+    if content.strip():
+        return summarize_for_library(title, None, content)
+    size = format_size(size_bytes)
+    return compact_text(f"{title}（{media_type or 'unknown'}，{size}）。非文本文件仅保存文件元数据和摘要，可下载原文件访问。", 240)
 
 
 def schedule_library_summary(item_type: str, item_id: str, title: str, description: str | None, content: str) -> None:
@@ -364,18 +457,61 @@ def attachment_summary(attachment: dict[str, Any]) -> str:
     return str(attachment.get("summary") or attachment.get("description") or "").strip()
 
 
-def infer_media_type(name: str, source_path: str | None, content: str | None) -> str:
+def infer_media_type(name: str, source_path: str | None, content: str | None, raw_bytes: bytes | None = None) -> str:
+    guessed, _ = mimetypes.guess_type(source_path or name)
+    if guessed:
+        return guessed
     suffix = Path(source_path or name).suffix.lower()
-    if suffix in {".md", ".txt", ".py", ".json", ".yaml", ".yml", ".ts", ".tsx", ".js"}:
+    if suffix in TEXT_SUFFIXES:
         return "text/plain"
     if content:
         return "text/plain"
+    if raw_bytes and is_probably_utf8(raw_bytes):
+        return "text/plain"
     return "application/octet-stream"
+
+
+def is_text_file(name: str, media_type: str | None, data: bytes) -> bool:
+    normalized_media_type = (media_type or "").split(";", 1)[0].strip().lower()
+    if normalized_media_type.startswith(TEXT_MEDIA_PREFIXES) or normalized_media_type in TEXT_MEDIA_TYPES:
+        return True
+    if Path(name).suffix.lower() in TEXT_SUFFIXES:
+        return True
+    return is_probably_utf8(data)
+
+
+def is_probably_utf8(data: bytes) -> bool:
+    if not data:
+        return True
+    sample = data[:8192]
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def decode_text_content(data: bytes) -> str:
+    if not data:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 def row_to_library_file(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["linked_node_ids"] = loads(item.get("linked_node_ids"), [])
+    item["text_extracted"] = bool(item.get("text_extracted"))
+    item["download_url"] = f"/files/{item['id']}/download"
     return item
 
 

@@ -27,6 +27,7 @@ SYSTEM_PROMPT = """你是 Me.Agent，一个以个人认知图为核心的长期�
 只有当工具结果实际返回 proposal 时，才能说“已放入待确认/审核”。只有当工具结果 review_required=false 且 ok=true 时，才能说“已经更新/生效”。
 如果用户要求删除节点、断开关系或调整结构，必须先调用对应工具；没有工具成功返回时，明确说明尚未执行。
 当用户说“创建成节点”“记录下来”“保存一下”等省略宾语的指令时，默认指代上一条 assistant 回复或最近正在讨论的内容；不要因为用户没有重复标题/正文而反问，应该自行提炼标题、摘要和正文并调用 create_node。
+当用户说“在/到/给 X 下/下面/里新建 Y 节点”时，X 是父节点或挂载位置，create_node 的 title 只写 Y，不要把父节点名拼进标题；层级关系由 link_to_node_ids 或后续边表达。
 不要输出结构化 proposal JSON。"""
 
 GRAPH_INTENT_PROMPT = """你是 Me.Agent 的 Conversation Agent。

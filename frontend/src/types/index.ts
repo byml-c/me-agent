@@ -11,6 +11,9 @@ export type NodeDatabaseAttachment = {
   summary?: string;
   path?: string;
   media_type?: string;
+  download_url?: string;
+  size_bytes?: number;
+  text_extracted?: boolean;
 };
 
 export type NodeScriptAttachment = {
@@ -40,6 +43,9 @@ export type NodeFileAttachment = {
   content?: string;
   summary?: string;
   media_type?: string;
+  download_url?: string;
+  size_bytes?: number;
+  text_extracted?: boolean;
 };
 
 export type NodeAttachments = {
@@ -68,6 +74,10 @@ export type LibraryFile = {
   summary?: string | null;
   media_type?: string | null;
   source_path?: string | null;
+  storage_path?: string | null;
+  download_url?: string;
+  size_bytes?: number;
+  text_extracted?: boolean;
   content: string;
   content_hash: string;
   created_at: string;
