@@ -19,7 +19,7 @@ me-agent nodes search "current topic"
 
 ```bash
 #!/usr/bin/env sh
-export SERVER_URL=http://localhost:11001
+export SERVER_URL=http://localhost:11101
 exec "$HOME/projects/me-agent/.venv/bin/python" "$HOME/projects/me-agent/backend/app/cli.py" "$@"
 ```
 
@@ -27,7 +27,7 @@ Non-interactive commands emit JSON. Parse JSON output; do not scrape text.
 
 Global options must appear before the subcommand:
 
-- `--api-url http://localhost:11001`: explicit HTTP backend.
+- `--api-url http://localhost:11101`: explicit HTTP backend.
 - `--no-seed`: local SQLite only; skip initial seed nodes.
 
 ## Agent Workflow

@@ -398,6 +398,9 @@ export function AgentPanel({
         return next;
       });
       await refreshCurrentSession(result.session_id);
+    } catch (error) {
+      setMessages((items) => appendStreamErrorToLastAssistant(items, error));
+      scrollMessagesToBottom();
     } finally {
       setLoading(false);
       onGraphBuildDone?.();
@@ -471,6 +474,9 @@ export function AgentPanel({
         onNodeChanged?.();
       }
       await refreshCurrentSession(result.session_id);
+    } catch (error) {
+      setMessages((items) => appendStreamErrorToLastAssistant(items, error));
+      scrollMessagesToBottom();
     } finally {
       setLoading(false);
     }
@@ -528,6 +534,9 @@ export function AgentPanel({
         onNodeChanged?.();
       }
       await refreshCurrentSession(result.session_id);
+    } catch (error) {
+      setMessages((items) => appendStreamErrorToLastAssistant(items, error));
+      scrollMessagesToBottom();
     } finally {
       setLoading(false);
     }
@@ -816,6 +825,18 @@ function appendToolCallToLastAssistant(items: Message[], event: ToolCallEvent): 
     next[next.length - 1] = { ...last, toolCalls: [...(last.toolCalls ?? []), event] };
   }
   return next;
+}
+
+function appendStreamErrorToLastAssistant(items: Message[], error: unknown): Message[] {
+  const message = error instanceof Error ? error.message : String(error);
+  const content = `供应商返回错误：\n\n${message || "stream failed"}`;
+  const next = [...items];
+  const last = next[next.length - 1];
+  if (last?.role === "assistant") {
+    next[next.length - 1] = { ...last, content };
+    return next;
+  }
+  return [...next, { role: "assistant", content }];
 }
 
 function toolCallLabel(toolCall: ToolCallEvent) {

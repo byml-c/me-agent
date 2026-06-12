@@ -20,6 +20,7 @@
     "graphology": "^0.26.0",
     "graphology-layout-force": "^0.2.4",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "katex": "^0.17.0",
     "lucide-react": "^0.475.0",
     "next": "^15.1.6",
     "prism-themes": "^1.9.0",
@@ -28,7 +29,9 @@
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
     "react-simple-code-editor": "^0.14.1",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

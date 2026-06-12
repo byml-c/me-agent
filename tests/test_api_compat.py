@@ -4,6 +4,8 @@ import json
 import time
 from pathlib import Path
 
+from backend.app.services import llm
+
 
 def test_default_seed_nodes_are_user_facing_workspaces(client):
     nodes = client.get("/nodes").json()
@@ -183,6 +185,27 @@ def test_stream_chat_emits_meta_delta_and_done(client):
     assert "event: delta" in body
     assert "event: done" in body
     assert "测试流式流式测试" in body
+
+
+def test_stream_chat_emits_provider_error_event(client, monkeypatch):
+    def responses_chat_with_tools(*args, **kwargs):
+        raise RuntimeError("Error code: 400 - DataInspectionFailed: Input text data may contain inappropriate content.")
+
+    monkeypatch.setattr(llm, "responses_chat_with_tools", responses_chat_with_tools)
+
+    with client.stream(
+        "POST",
+        "/chat/stream",
+        json={"message": "触发供应商错误", "options": {"allow_proposals": True}},
+    ) as response:
+        assert response.status_code == 200
+        body = response.read().decode("utf-8")
+
+    assert "event: meta" in body
+    assert "event: error" in body
+    assert "DataInspectionFailed" in body
+    assert "inappropriate content" in body
+    assert "event: done" not in body
 
 
 def test_edit_message_stream_emits_delta_and_done(client):

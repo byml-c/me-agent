@@ -109,6 +109,7 @@ def test_responses_chat_with_tools_forwards_streaming_text_deltas(monkeypatch):
             "input": [{"role": "user", "content": "测试 Responses 流式"}],
             "tools": [],
             "store": True,
-            "reasoning": {"effort": "minimal"},
+            "reasoning": llm.reasoning_config(),
         }
     ]
+

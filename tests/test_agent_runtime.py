@@ -1,10 +1,42 @@
 from __future__ import annotations
 
 from backend.app.db.session import get_db
-from backend.app.services import agent_runtime, graph_store
+from backend.app.services import agent_runtime, graph_store, llm
 
 
-def test_agent_runtime_chat_persists_episode_messages_and_proposals(isolated_db, deterministic_llm):
+def test_agent_runtime_chat_persists_episode_messages_and_tool_proposals(isolated_db, deterministic_llm, monkeypatch):
+    def responses_chat_with_tools(
+        input_items,
+        tools,
+        execute_tool,
+        temperature=0.4,
+        max_tool_rounds=4,
+        on_tool_call=None,
+        on_text_delta=None,
+        on_reasoning_delta=None,
+        on_stream_event=None,
+        previous_response_id=None,
+        context=None,
+    ):
+        arguments = {
+            "title": "给 CLI 加测试",
+            "body": "todo：给 CLI 加测试",
+            "reason": "用户要求记录 todo。",
+        }
+        result = execute_tool("create_node", arguments)
+        if on_tool_call:
+            on_tool_call({"name": "create_node", "arguments": arguments, "call_id": "call_test", "result": result})
+        if on_text_delta:
+            on_text_delta("已放入待确认。")
+        return {
+            "text": "已放入待确认。",
+            "tool_results": [{"result": result}],
+            "response": {"id": "resp_test"},
+            "response_id": "resp_test",
+        }
+
+    monkeypatch.setattr(llm, "responses_chat_with_tools", responses_chat_with_tools)
+
     with get_db() as db:
         anchor = graph_store.create_node(db, title="CLI 开发", body="后端 CLI 与 API 兼容")
 

@@ -242,6 +242,7 @@ def responses_chat_with_tools(
     working_previous_response_id = previous_response_id
     tool_results: list[dict[str, Any]] = []
     last_response: dict[str, Any] | None = None
+    force_create_node = should_force_create_node(input_items) and any(tool.get("name") == "create_node" for tool in tools)
     for round_index in range(max_tool_rounds + 1):
         payload = {
             "model": settings.openai_base_model,
@@ -256,6 +257,12 @@ def responses_chat_with_tools(
             payload["extra_body"] = extra_body
         if working_previous_response_id:
             payload["previous_response_id"] = working_previous_response_id
+        if force_create_node and round_index == 0:
+            payload["tool_choice"] = {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": "create_node"}],
+            }
         last_response, streamed_text = responses_create_streaming(
             payload,
             on_text_delta=on_text_delta,
@@ -305,6 +312,20 @@ def responses_chat_with_tools(
     }
 
 
+def latest_user_content(input_items: list[dict[str, Any]]) -> str:
+    for item in reversed(input_items):
+        if item.get("role") == "user":
+            return str(item.get("content") or "")
+    return ""
+
+
+def first_system_content(input_items: list[dict[str, Any]]) -> str:
+    for item in input_items:
+        if item.get("role") == "system":
+            return str(item.get("content") or "")
+    return ""
+
+
 def response_instructions(context: dict[str, Any] | None = None) -> str:
     if not context:
         return SYSTEM_PROMPT
@@ -337,6 +358,23 @@ def sdk_to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     return {}
+
+
+def should_force_create_node(input_items: list[dict[str, Any]]) -> bool:
+    content = latest_user_content(input_items).strip().lower()
+    if not content:
+        return False
+    phrases = [
+        "保存节点",
+        "创建成节点",
+        "创建节点",
+        "存成节点",
+        "记成节点",
+        "记录下来",
+        "保存一下",
+        "save node",
+    ]
+    return any(phrase in content for phrase in phrases)
 
 
 def extract_response_text(response: dict[str, Any]) -> str:

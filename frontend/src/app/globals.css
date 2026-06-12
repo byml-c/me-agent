@@ -1,5 +1,6 @@
 @import "@xyflow/react/dist/style.css";
 @import "github-markdown-css/github-markdown-light.css";
+@import "katex/dist/katex.min.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

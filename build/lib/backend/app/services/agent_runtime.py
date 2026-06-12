@@ -112,6 +112,19 @@ def run_responses_agent(
         context=context,
     )
     assistant_message = output["text"].strip()
+    if should_force_create_node(user_message["content"]) and not proposals_from_tool_events(tool_events):
+        previous_assistant = previous_assistant_content(history, user_message["id"])
+        if previous_assistant:
+            arguments = {
+                "title": infer_node_title(previous_assistant),
+                "body": previous_assistant,
+                "summary": summarize_for_node(previous_assistant),
+                "reason": "用户明确要求将当前讨论保存为节点。",
+            }
+            result = graph_tools.create_node(db, arguments, context)
+            tool_events.append({"name": "create_node", "arguments": arguments, "result": result})
+            if on_tool_call:
+                on_tool_call({"name": "create_node", "arguments": arguments, "call_id": None})
     assistant = graph_store.add_message(
         db,
         session["id"],
@@ -235,6 +248,37 @@ def proposals_from_tool_events(tool_events: list[dict[str, Any]]) -> list[dict[s
         if proposal:
             proposals.append(proposal)
     return proposals
+
+
+def should_force_create_node(content: str) -> bool:
+    text = content.strip().lower()
+    return any(
+        phrase in text
+        for phrase in ["保存节点", "创建成节点", "创建节点", "存成节点", "记成节点", "记录下来", "保存一下", "save node"]
+    )
+
+
+def previous_assistant_content(history: list[dict[str, Any]], current_user_message_id: str) -> str:
+    previous = ""
+    for message in history:
+        if message["id"] == current_user_message_id:
+            break
+        if message["role"] == "assistant" and message.get("content"):
+            previous = message["content"]
+    return previous
+
+
+def infer_node_title(content: str) -> str:
+    for raw_line in content.splitlines():
+        line = raw_line.strip().strip("#*> -")
+        if line:
+            return line[:42]
+    return "对话沉淀"
+
+
+def summarize_for_node(content: str, limit: int = 180) -> str:
+    clean = " ".join(content.split())
+    return clean[:limit] + ("..." if len(clean) > limit else "")
 
 
 def response_payload(session: dict[str, Any], context: dict[str, Any], episode: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
