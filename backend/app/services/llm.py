@@ -242,15 +242,22 @@ def responses_chat_with_tools(
     working_previous_response_id = previous_response_id
     tool_results: list[dict[str, Any]] = []
     last_response: dict[str, Any] | None = None
+    usage_totals: dict[str, int] = empty_usage_totals()
     for round_index in range(max_tool_rounds + 1):
         payload = {
             "model": settings.openai_base_model,
             "instructions": response_instructions(context),
             "input": working_input,
             "tools": tools,
-            "store": True,
-            "reasoning": reasoning_config(),
+            "store": True
         }
+        if 'dashscope' in settings.openai_base_url.lower():
+            payload["reasoning"] = reasoning_config()
+        if 'volcano' in settings.openai_base_url.lower():
+            payload['caching'] = {'type': 'enabled'}
+            payload['reasoning'] = {'type': 'disabled'}
+            payload['reasoning_effort'] = 'minimal'
+
         extra_body = provider_extra_body(settings)
         if extra_body:
             payload["extra_body"] = extra_body
@@ -262,6 +269,7 @@ def responses_chat_with_tools(
             on_reasoning_delta=on_reasoning_delta,
             on_stream_event=on_stream_event,
         )
+        add_response_usage(usage_totals, last_response)
         output = last_response.get("output", [])
         calls = [item for item in output if item.get("type") == "function_call"]
         if not calls:
@@ -270,6 +278,7 @@ def responses_chat_with_tools(
                 "tool_results": tool_results,
                 "response": last_response,
                 "response_id": last_response.get("id"),
+                "usage": usage_totals,
             }
         working_previous_response_id = str(last_response.get("id") or "") or working_previous_response_id
         function_outputs: list[dict[str, Any]] = []
@@ -302,6 +311,7 @@ def responses_chat_with_tools(
         "tool_results": tool_results,
         "response": last_response,
         "response_id": (last_response or {}).get("id"),
+        "usage": usage_totals,
     }
 
 
@@ -337,6 +347,36 @@ def sdk_to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     return {}
+
+
+def empty_usage_totals() -> dict[str, int]:
+    return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
+
+
+def add_response_usage(target: dict[str, int], response: dict[str, Any]) -> None:
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return
+    input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
+    cached_tokens = int(
+        usage.get("cached_tokens")
+        or nested_int(usage, "input_tokens_details", "cached_tokens")
+        or nested_int(usage, "prompt_tokens_details", "cached_tokens")
+        or 0
+    )
+    target["input_tokens"] += input_tokens
+    target["output_tokens"] += output_tokens
+    target["total_tokens"] += total_tokens
+    target["cached_tokens"] += cached_tokens
+
+
+def nested_int(value: dict[str, Any], key: str, nested_key: str) -> int:
+    nested = value.get(key)
+    if not isinstance(nested, dict):
+        return 0
+    return int(nested.get(nested_key) or 0)
 
 
 def extract_response_text(response: dict[str, Any]) -> str:

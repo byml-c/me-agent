@@ -166,6 +166,7 @@ export type ChatResponse = {
     context_nodes: MeNode[];
     context_edges: MeEdge[];
     context_summary: string;
+    token_usage?: TokenUsage;
   };
   episode_node: MeNode;
   graph_intent?: {
@@ -179,6 +180,20 @@ export type ChatResponse = {
   auto_applied?: unknown[];
 };
 
+export type TokenUsage = {
+  input: number;
+  output: number;
+  total: number;
+  max_context: number;
+  cached?: number;
+  estimated?: number;
+};
+
+export type RuntimeConfig = {
+  model: string;
+  context_budget: number;
+};
+
 export type ChatMessage = {
   id: string;
   session_id: string;
@@ -188,6 +203,7 @@ export type ChatMessage = {
   parent_message_id?: string | null;
   source_message_id?: string | null;
   provider_response_id?: string | null;
+  token_usage?: TokenUsage | null;
   variant_index?: number;
   status?: "active" | "superseded";
   created_at: string;

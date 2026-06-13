@@ -4,7 +4,9 @@ import sqlite3
 from collections.abc import Iterator
 from typing import Any
 
+from backend.app.core.config import get_settings
 from backend.app.services import context_reader, graph_store, graph_tools, graph_writer, graph_writer_agent, llm
+from backend.app.services.model_context import model_context_window
 
 
 def chat(
@@ -31,6 +33,7 @@ def prepare_chat(
     parent_message_id: str | None = None,
     existing_user_message_id: str | None = None,
 ) -> dict[str, Any]:
+    context_budget = current_model_context_window(context_budget)
     anchors = context_reader.resolve_anchors(db, message, anchor_node_ids, workspace_id)
     session = graph_store.ensure_session(
         db,
@@ -40,6 +43,7 @@ def prepare_chat(
         workspace_id=workspace_id,
     )
     context = context_reader.read_context(db, message, anchors, depth=2, limit=min(32, max(8, context_budget // 500)))
+    context["token_usage"] = estimate_token_usage(message, context, context_budget)
     if existing_user_message_id:
         user_message = graph_store.get_message(db, existing_user_message_id)
     else:
@@ -112,6 +116,7 @@ def run_responses_agent(
         context=context,
     )
     assistant_message = output["text"].strip()
+    apply_model_token_usage(context, output, assistant_message)
     assistant = graph_store.add_message(
         db,
         session["id"],
@@ -122,6 +127,7 @@ def run_responses_agent(
         source_message_id=source_message_id,
         variant_index=variant_index,
         provider_response_id=output.get("response_id"),
+        token_usage=context.get("token_usage"),
     )
     graph_store.append_event(db, "AgentResponseGenerated", "agent", {"session_id": session["id"], "message_id": assistant["id"]})
     if output.get("fallback"):
@@ -204,6 +210,63 @@ def compact_context_nodes(context: dict[str, Any]) -> str:
     return json.dumps(nodes, ensure_ascii=False)
 
 
+def estimate_token_usage(message: str, context: dict[str, Any], context_budget: int) -> dict[str, int]:
+    context_text = (
+        f"{context.get('context_summary') or ''}\n"
+        f"{compact_context_nodes(context)}"
+    )
+    input_tokens = estimate_tokens(f"{message}\n{context_text}")
+    max_context = max(1, int(context_budget or 12000))
+    return {
+        "input": input_tokens,
+        "output": 0,
+        "total": input_tokens,
+        "max_context": max_context,
+        "cached": 0,
+        "estimated": 1,
+    }
+
+
+def apply_model_token_usage(context: dict[str, Any], output: dict[str, Any], assistant_message: str) -> None:
+    usage = output.get("usage")
+    token_usage = context.get("token_usage")
+    if not isinstance(token_usage, dict):
+        token_usage = estimate_token_usage("", context, current_model_context_window())
+        context["token_usage"] = token_usage
+    if isinstance(usage, dict) and int(usage.get("total_tokens") or 0) > 0:
+        token_usage["input"] = int(usage.get("input_tokens") or 0)
+        token_usage["output"] = int(usage.get("output_tokens") or 0)
+        token_usage["total"] = int(usage.get("total_tokens") or token_usage["input"] + token_usage["output"])
+        token_usage["cached"] = int(usage.get("cached_tokens") or 0)
+        token_usage["estimated"] = 0
+        return
+    output_tokens = estimate_tokens(assistant_message)
+    input_tokens = int(token_usage.get("input") or 0)
+    token_usage["output"] = output_tokens
+    token_usage["total"] = input_tokens + output_tokens
+    token_usage["estimated"] = 1
+
+
+def estimate_tokens(value: str) -> int:
+    if not value:
+        return 0
+    ascii_chars = 0
+    non_ascii_chars = 0
+    for char in value:
+        if char.isspace():
+            continue
+        if ord(char) < 128:
+            ascii_chars += 1
+        else:
+            non_ascii_chars += 1
+    return max(1, (ascii_chars + 3) // 4 + non_ascii_chars)
+
+
+def current_model_context_window(fallback: int = 12000) -> int:
+    settings = get_settings()
+    return model_context_window(settings.openai_base_model, fallback=fallback)
+
+
 def summarize_tool_events(tool_events: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     proposals: list[dict[str, Any]] = []
     auto_applied: list[dict[str, Any]] = []
@@ -264,10 +327,12 @@ def regenerate_assistant(
     user_message = graph_store.active_message_before(db, assistant["session_id"], assistant_message_id, role="user")
     if not user_message:
         return None
+    context_budget = current_model_context_window(context_budget)
     graph_store.archive_messages_after(db, assistant["session_id"], assistant_message_id, include_self=True)
     session = graph_store.get_session(db, assistant["session_id"])
     anchors = user_message.get("context_node_ids") or session.get("current_anchor_node_ids", [])
     context = context_reader.read_context(db, user_message["content"], anchors, depth=2, limit=min(32, max(8, context_budget // 500)))
+    context["token_usage"] = estimate_token_usage(user_message["content"], context, context_budget)
     episode = create_episode(db, session["id"], user_message["content"], context)
     variant_index = graph_store.next_variant_index(db, assistant.get("source_message_id") or assistant["id"])
     result = run_responses_agent(
@@ -299,10 +364,12 @@ def edit_user_message_and_regenerate(
     user_message = graph_store.update_message_content(db, message_id, content)
     if not user_message or user_message["role"] != "user":
         return None
+    context_budget = current_model_context_window(context_budget)
     graph_store.archive_messages_after(db, user_message["session_id"], message_id, include_self=False)
     session = graph_store.get_session(db, user_message["session_id"])
     anchors = user_message.get("context_node_ids") or session.get("current_anchor_node_ids", [])
     context = context_reader.read_context(db, content, anchors, depth=2, limit=min(32, max(8, context_budget // 500)))
+    context["token_usage"] = estimate_token_usage(content, context, context_budget)
     episode = create_episode(db, session["id"], content, context)
     result = run_responses_agent(
         db,
@@ -375,6 +442,7 @@ def record_assistant_message(
         "assistant",
         assistant_message,
         [node["id"] for node in context["context_nodes"]],
+        token_usage=context.get("token_usage"),
     )
     graph_store.append_event(db, "AgentResponseGenerated", "agent", {"session_id": session_id})
 

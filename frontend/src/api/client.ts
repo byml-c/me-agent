@@ -1,4 +1,4 @@
-import type { ChatResponse, ChatSession, EgoGraph, EventLogItem, LibraryEntry, LibraryFile, MeEdge, MeNode, NodeScriptRunResult, Proposal } from "@/types";
+import type { ChatResponse, ChatSession, EgoGraph, EventLogItem, LibraryEntry, LibraryFile, MeEdge, MeNode, NodeScriptRunResult, Proposal, RuntimeConfig } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -23,6 +23,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  config: {
+    runtime: () => request<RuntimeConfig>("/config/runtime")
+  },
   nodes: {
     list: () => request<MeNode[]>("/nodes"),
     create: (payload: { title: string; body?: string; summary?: string; is_workspace?: boolean }) =>

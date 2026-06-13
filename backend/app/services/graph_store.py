@@ -53,6 +53,7 @@ def row_to_session(row: sqlite3.Row) -> dict[str, Any]:
 def row_to_message(row: sqlite3.Row) -> dict[str, Any]:
     item = dict_from_row(row)
     item["context_node_ids"] = loads(item.get("context_node_ids"), [])
+    item["token_usage"] = loads(item.get("token_usage"), None)
     item.setdefault("parent_message_id", None)
     item.setdefault("source_message_id", None)
     item.setdefault("variant_index", 0)
@@ -567,6 +568,7 @@ def add_message(
     source_message_id: str | None = None,
     variant_index: int = 0,
     provider_response_id: str | None = None,
+    token_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
     message = {
@@ -579,6 +581,7 @@ def add_message(
         "source_message_id": source_message_id,
         "variant_index": variant_index,
         "provider_response_id": provider_response_id,
+        "token_usage": token_usage,
         "status": "active",
         "created_at": now,
         "updated_at": now,
@@ -586,8 +589,8 @@ def add_message(
     db.execute(
         """
         INSERT INTO chat_messages
-        (id,session_id,role,content,context_node_ids,parent_message_id,source_message_id,variant_index,status,created_at,updated_at,provider_response_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        (id,session_id,role,content,context_node_ids,parent_message_id,source_message_id,variant_index,status,created_at,updated_at,provider_response_id,token_usage)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             message["id"],
@@ -602,6 +605,7 @@ def add_message(
             now,
             now,
             provider_response_id,
+            dumps(token_usage) if token_usage is not None else None,
         ),
     )
     db.execute("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (now, session_id))

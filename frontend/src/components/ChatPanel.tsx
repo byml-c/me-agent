@@ -7,7 +7,7 @@ import { NODE_ICON_OPTIONS, type NodeIconKey } from "@/lib/nodeIcons";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { NodeEditorPane, type NodeEditorDraft } from "@/components/NodeEditor";
 import { SharedPanel, type SharedPanelView } from "@/components/SharedPanel";
-import type { ChatMessage, ChatResponse, ChatSession, MeNode, NodeAttachments, NodeDatabaseAttachment, NodeFileAttachment, NodeScriptAttachment, NodeScriptRunResult, Proposal } from "@/types";
+import type { ChatMessage, ChatResponse, ChatSession, MeNode, NodeAttachments, NodeDatabaseAttachment, NodeFileAttachment, NodeScriptAttachment, NodeScriptRunResult, Proposal, RuntimeConfig, TokenUsage } from "@/types";
 
 type Message = {
   id?: string;
@@ -56,6 +56,7 @@ const panelClass = "absolute overflow-hidden rounded-3xl border border-slate-200
 const ghostButtonClass = "grid h-8 w-8 place-items-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-900/20";
 const messageButtonClass = "grid h-7 w-7 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 hover:text-slate-900";
 const messageButtonDarkClass = "border-white/15 bg-slate-900 text-white";
+const DEFAULT_CONTEXT_BUDGET = 12000;
 
 export function AgentPanel({
   sessionId,
@@ -87,6 +88,8 @@ export function AgentPanel({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [response, setResponse] = useState<ChatResponse | null>(null);
+  const [composerUsage, setComposerUsage] = useState<TokenUsage | undefined>();
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>({ model: "gpt-4.1-mini", context_budget: DEFAULT_CONTEXT_BUDGET });
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(sessionId === "new" ? null : sessionId ?? null);
   const [loading, setLoading] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
@@ -118,6 +121,7 @@ export function AgentPanel({
       setNodes(items);
       setAnchorId(externalAnchorId ?? items[0]?.id ?? "");
     }).catch(console.error);
+    api.config.runtime().then(setRuntimeConfig).catch(console.error);
     refreshSessions();
   }, []);
 
@@ -234,11 +238,14 @@ export function AgentPanel({
       setCurrentSessionId(null);
       setMessages([]);
       setResponse(null);
+      setComposerUsage(undefined);
       return;
     }
     const session = await api.chat.session(id);
     setCurrentSessionId(session.id);
     setMessages(messagesFromSession(session));
+    setResponse(null);
+    setComposerUsage(sessionTokenUsage(session, runtimeConfig.context_budget));
     const nextAnchor = session.current_anchor_node_ids[0];
     if (nextAnchor && !anchorLocked) {
       void updateAnchor(nextAnchor, "manual", false);
@@ -332,8 +339,10 @@ export function AgentPanel({
         message: userMessage,
         parent_message_id: parentMessageId,
         anchor_node_ids: anchorId ? [anchorId] : [],
+        contextBudget: runtimeConfig.context_budget,
         onMeta: (meta) => {
           setCurrentSessionId(meta.session_id);
+          setComposerUsage(meta.used_context.token_usage);
         },
         onDelta: (delta) => {
           setMessages((items) => {
@@ -383,6 +392,7 @@ export function AgentPanel({
       });
       setCurrentSessionId(result.session_id);
       setResponse(result);
+      setComposerUsage(result.used_context.token_usage);
       refreshSessions();
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
@@ -437,8 +447,10 @@ export function AgentPanel({
     try {
       const result = await streamChat({
         endpoint: `/chat/messages/${encodeURIComponent(editedId)}/edit/stream`,
-        requestBody: { content: nextContent, context_budget: 12000 },
-        onMeta: () => {},
+        requestBody: { content: nextContent, context_budget: runtimeConfig.context_budget },
+        onMeta: (meta) => {
+          setComposerUsage(meta.used_context.token_usage);
+        },
         onDelta: (delta) => {
           setMessages((items) => appendToLastAssistant(items, "content", delta));
         },
@@ -466,6 +478,7 @@ export function AgentPanel({
       });
       setCurrentSessionId(result.session_id);
       setResponse(result);
+      setComposerUsage(result.used_context.token_usage);
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
         onProposalReview?.(result);
@@ -497,8 +510,10 @@ export function AgentPanel({
     try {
       const result = await streamChat({
         endpoint: `/chat/messages/${encodeURIComponent(messageId)}/regenerate/stream`,
-        requestBody: { variant_temperature: 0.65, context_budget: 12000 },
-        onMeta: () => {},
+        requestBody: { variant_temperature: 0.65, context_budget: runtimeConfig.context_budget },
+        onMeta: (meta) => {
+          setComposerUsage(meta.used_context.token_usage);
+        },
         onDelta: (delta) => {
           setMessages((items) => appendToLastAssistant(items, "content", delta));
         },
@@ -526,6 +541,7 @@ export function AgentPanel({
       });
       setCurrentSessionId(result.session_id);
       setResponse(result);
+      setComposerUsage(result.used_context.token_usage);
       if (result.proposals.some((proposal) => proposal.status === "pending")) {
         setContextOpen(true);
         onProposalReview?.(result);
@@ -744,6 +760,8 @@ export function AgentPanel({
               message={message}
               messages={messages}
               messagesRef={messagesRef}
+              composerUsage={composerUsage}
+              runtimeConfig={runtimeConfig}
               onCancelEdit={() => setEditingMessageId(null)}
               onComposerKeyDown={handleComposerKeyDown}
               onEditingContentChange={setEditingContent}
@@ -768,6 +786,54 @@ function messagesFromSession(session: ChatSession): Message[] {
       content: item.content,
       variant_index: item.variant_index
     }));
+}
+
+function estimateSessionTokenUsage(session: ChatSession, maxContext: number): TokenUsage | undefined {
+  const messages = session.messages ?? [];
+  if (!messages.length) {
+    return undefined;
+  }
+  const input = messages
+    .filter((item) => item.role === "user")
+    .reduce((total, item) => total + estimateDisplayTokens(item.content), 0);
+  const output = messages
+    .filter((item) => item.role === "assistant")
+    .reduce((total, item) => total + estimateDisplayTokens(item.content), 0);
+  return {
+    input,
+    output,
+    total: input + output,
+    max_context: Math.max(1, maxContext || DEFAULT_CONTEXT_BUDGET),
+    cached: 0,
+    estimated: 1
+  };
+}
+
+function sessionTokenUsage(session: ChatSession, maxContext: number): TokenUsage | undefined {
+  const persisted = [...(session.messages ?? [])]
+    .reverse()
+    .find((item) => item.role === "assistant" && item.token_usage && item.token_usage.total > 0)
+    ?.token_usage;
+  return persisted ?? estimateSessionTokenUsage(session, maxContext);
+}
+
+function estimateDisplayTokens(value: string): number {
+  if (!value.trim()) {
+    return 0;
+  }
+  let asciiChars = 0;
+  let nonAsciiChars = 0;
+  for (const char of value) {
+    if (/\s/.test(char)) {
+      continue;
+    }
+    if (char.charCodeAt(0) < 128) {
+      asciiChars += 1;
+    } else {
+      nonAsciiChars += 1;
+    }
+  }
+  return Math.max(1, Math.ceil(asciiChars / 4) + nonAsciiChars);
 }
 
 function mergeTransientReasoning(fresh: Message[], previous: Message[]): Message[] {
@@ -855,6 +921,8 @@ type ChatPanelViewProps = {
   message: string;
   messages: Message[];
   messagesRef: RefObject<HTMLDivElement | null>;
+  composerUsage?: TokenUsage;
+  runtimeConfig: RuntimeConfig;
   onCancelEdit: () => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onEditingContentChange: (content: string) => void;
@@ -872,6 +940,8 @@ export function ChatPanel({
   message,
   messages,
   messagesRef,
+  composerUsage,
+  runtimeConfig,
   onCancelEdit,
   onComposerKeyDown,
   onEditingContentChange,
@@ -951,28 +1021,70 @@ export function ChatPanel({
         {loading ? <div className="h-6 w-8 rounded-full bg-[radial-gradient(circle_at_10px_11px,#9aa39e_2px,transparent_3px),radial-gradient(circle_at_17px_11px,#9aa39e_2px,transparent_3px),radial-gradient(circle_at_24px_11px,#9aa39e_2px,transparent_3px)] bg-slate-100" /> : null}
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 border-t border-slate-200 p-3">
-        <textarea
-          className="min-h-[54px] max-h-[170px] resize-y rounded-[24px] border-0 bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-900 outline-none focus:ring-1 focus:ring-slate-900/10"
-          style={{ resize: "none" }}
-          placeholder="输入消息，Agent 会读取锚点附近的局部图上下文"
-          value={message}
-          onChange={(event) => onMessageChange(event.target.value)}
-          onKeyDown={onComposerKeyDown}
-        />
-        <button
-          className="inline-grid h-12 w-12 place-items-center rounded-full bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-          title="发送"
-          onClick={onSend}
-          disabled={loading || !message.trim()}
-          type="button"
-        >
-          <Send size={16} />
-          <span className="sr-only">发送</span>
-        </button>
+      <div className="border-t border-slate-200 p-3">
+        <div className="grid min-h-[100px] min-w-0 grid-rows-[60px_auto] rounded-[18px] bg-slate-100 p-2 shadow-sm">
+          <textarea
+            className="h-[60px] min-h-[60px] max-h-[60px] w-full resize-none border-0 bg-transparent px-[5px] py-2 text-sm leading-[22px] text-slate-900 outline-none placeholder:text-slate-400"
+            placeholder="输入消息，Agent 会读取锚点附近的局部图上下文"
+            value={message}
+            onChange={(event) => onMessageChange(event.target.value)}
+            onKeyDown={onComposerKeyDown}
+          />
+          <div className="flex min-w-0 items-end justify-between gap-2">
+            <ComposerUsageMeta model={runtimeConfig.model} usage={composerUsage} maxContext={runtimeConfig.context_budget} />
+            <button
+              className="inline-grid h-10 w-10 shrink-0 place-items-center rounded-full bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              title="发送"
+              onClick={onSend}
+              disabled={loading || !message.trim()}
+              type="button"
+            >
+              <Send size={16} />
+              <span className="sr-only">发送</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
+}
+
+function ComposerUsageMeta({ model, usage, maxContext }: { model: string; usage?: TokenUsage; maxContext: number }) {
+  const input = Math.max(0, usage?.input ?? 0);
+  const output = Math.max(0, usage?.output ?? 0);
+  const cached = Math.max(0, usage?.cached ?? 0);
+  const total = Math.max(0, usage?.total ?? input + output);
+  const limit = Math.max(1, usage?.max_context ?? maxContext ?? DEFAULT_CONTEXT_BUDGET);
+  const ratio = Math.min(1, total / limit);
+  const percent = ratio * 100;
+  const ringStyle = {
+    background: `conic-gradient(#0f172a ${percent}%, #cbd5e1 0)`
+  };
+
+  return (
+    <div className="flex min-w-0 items-center justify-start gap-2 text-left text-[11px] leading-3 text-slate-500">
+      <span
+        className="relative h-[15px] w-[15px] shrink-0 rounded-full"
+        style={ringStyle}
+        title={`上下文占比：${percent.toFixed(1)}%`}
+      >
+        <span className="absolute inset-[3px] rounded-full bg-slate-100" />
+      </span>
+      <span className="min-w-0 truncate">
+        <span className="font-medium text-slate-700">{model || "未配置模型"}</span>
+        <span className="mx-1 text-slate-300">/</span>
+        输入：{formatTokenCount(input)}，输出：{formatTokenCount(output)}，命中：{formatTokenCount(cached)}，总计：{formatTokenCount(total)}
+      </span>
+    </div>
+  );
+}
+
+function formatTokenCount(value: number): string {
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded >= 1000) {
+    return `${(rounded / 1000).toFixed(2)}k`;
+  }
+  return new Intl.NumberFormat("zh-CN").format(rounded);
 }
 
 function MessageMarkdown({ content }: { content: string }) {
@@ -1102,6 +1214,7 @@ async function streamChat(payload: {
   message?: string;
   parent_message_id?: string | null;
   anchor_node_ids?: string[];
+  contextBudget?: number;
   onMeta: (meta: Pick<ChatResponse, "session_id" | "used_context" | "episode_node">) => void;
   onDelta: (delta: string) => void;
   onReasoningDelta: (delta: string) => void;
@@ -1116,7 +1229,7 @@ async function streamChat(payload: {
     message: payload.message ?? "",
     parent_message_id: payload.parent_message_id,
     anchor_node_ids: payload.anchor_node_ids ?? [],
-    options: { allow_proposals: true, context_budget: 12000 }
+    options: { allow_proposals: true, context_budget: payload.contextBudget ?? DEFAULT_CONTEXT_BUDGET }
   };
   const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}${payload.endpoint ?? "/chat/stream"}`, {
     method: "POST",

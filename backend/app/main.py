@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api import (
+    routes_config,
     routes_chat,
     routes_edges,
     routes_events,
@@ -100,6 +101,7 @@ def seed_if_empty() -> None:
 
 app.include_router(routes_nodes.router)
 app.include_router(routes_edges.router)
+app.include_router(routes_config.router)
 app.include_router(routes_chat.router)
 app.include_router(routes_files.router)
 app.include_router(routes_library.router)

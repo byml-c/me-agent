@@ -212,6 +212,7 @@ def ensure_chat_message_columns(db: sqlite3.Connection) -> None:
         "status": "ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
         "updated_at": "ALTER TABLE chat_messages ADD COLUMN updated_at TEXT",
         "provider_response_id": "ALTER TABLE chat_messages ADD COLUMN provider_response_id TEXT",
+        "token_usage": "ALTER TABLE chat_messages ADD COLUMN token_usage TEXT",
     }
     for column, sql in migrations.items():
         if column not in columns:
